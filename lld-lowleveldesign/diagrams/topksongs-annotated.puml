@@ -1,0 +1,533 @@
+@startuml TopKSongsAPI_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Top-K Most Frequently Played Songs API (Annotated for Interview)</size>\n<size:11>Trace: "User plays a song. Play count incremented. Query: give me top 10 songs this week, globally, sorted by plays."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class MusicAnalyticsService <<Facade>> {
+    - playTracker : PlayTracker
+    - topKEngine : TopKEngine
+    - songRepository : SongRepository
+    - cacheManager : CacheManager
+    --
+    + recordPlay(userId, songId) : void
+    + getTopKSongs(k, timeWindow) : List<SongPlayCount>
+    + getTopKSongs(k, timeWindow, genre) : List<SongPlayCount>
+    + getTopKSongsForUser(userId, k) : List<SongPlayCount>
+    + getPlayCount(songId) : long
+    + getPlayCount(songId, timeWindow) : long
+    + getTrendingSongs(k) : List<SongPlayCount>
+}
+
+note top of MusicAnalyticsService #BBDEFB
+    **STEP 1 - Start here.**
+    "Two operations: (1) recordPlay() — called
+    every time a user plays a song.
+    (2) getTopKSongs(k, timeWindow) — return
+    the k most played songs in a window.
+    **Facade** hides tracker, ranking engine,
+    cache, and data store."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: SONG MODEL
+' ====================================================================
+class Song {
+    - songId : String
+    - title : String
+    - artist : String
+    - album : String
+    - genre : Genre
+    - durationSeconds : int
+    - releaseDate : LocalDate
+    --
+    + getTitle() : String
+    + getArtist() : String
+    + getGenre() : Genre
+}
+
+enum Genre {
+    POP
+    ROCK
+    HIP_HOP
+    CLASSICAL
+    JAZZ
+    ELECTRONIC
+    COUNTRY
+    BOLLYWOOD
+}
+
+class SongPlayCount {
+    - song : Song
+    - playCount : long
+    - rank : int
+    --
+    + getSong() : Song
+    + getPlayCount() : long
+    + getRank() : int
+}
+
+enum TimeWindow {
+    LAST_HOUR
+    LAST_24_HOURS
+    LAST_7_DAYS
+    LAST_30_DAYS
+    ALL_TIME
+}
+
+note top of Song #C8E6C9
+    **STEP 2 - Core models.**
+    "**Song**: id, title, artist, genre.
+    **SongPlayCount**: the result object — pairs
+    a Song with its play count and rank.
+    **TimeWindow**: the query scope (hour/day/
+    week/month/all-time)."
+end note
+
+SongPlayCount --> Song : for >
+Song --> Genre
+
+
+' ====================================================================
+'  STEP 3: PLAY EVENT + TRACKER
+' ====================================================================
+class PlayEvent {
+    - eventId : String
+    - userId : String
+    - songId : String
+    - timestamp : LocalDateTime
+    - source : PlaySource
+}
+
+enum PlaySource {
+    SEARCH
+    PLAYLIST
+    RECOMMENDATION
+    RADIO
+    SHARED_LINK
+}
+
+class PlayTracker {
+    - eventStore : PlayEventStore
+    - frequencyCounter : FrequencyCounter
+    - observers : List<PlayEventObserver>
+    --
+    + recordPlay(userId, songId) : void
+    + getPlayCount(songId, from, to) : long
+    + getPlaysInWindow(songId, window) : long
+    - notifyObservers(event) : void
+}
+
+interface PlayEventStore <<Repository>> {
+    + store(event) : void
+    + getEvents(songId, from, to) : List<PlayEvent>
+    + getEventCount(songId, from, to) : long
+}
+
+class InMemoryEventStore {
+    - events : List<PlayEvent>
+    --
+    + store(event) : void
+    + getEvents(songId, from, to) : List<PlayEvent>
+    + getEventCount(songId, from, to) : long
+}
+
+class DatabaseEventStore {
+    - connection : Connection
+    --
+    + store(event) : void
+    + getEvents(songId, from, to) : List<PlayEvent>
+    + getEventCount(songId, from, to) : long
+}
+
+note top of PlayTracker #C8E6C9
+    **STEP 3 - Every play is recorded.**
+    "User plays a song. PlayTracker creates a
+    PlayEvent (who, what, when, from where)
+    and stores it via **PlayEventStore**."
+
+    "**Repository Pattern**: InMemory for tests,
+    Database for production. Tracker also
+    updates FrequencyCounter (real-time counts)
+    and notifies observers."
+    **Pattern: Repository | DIP, OCP**
+end note
+
+PlayEvent --> PlaySource
+PlayTracker --> PlayEventStore : stores via >
+PlayEventStore <|.. InMemoryEventStore
+PlayEventStore <|.. DatabaseEventStore
+PlayTracker --> PlayEvent : creates >
+MusicAnalyticsService --> PlayTracker
+
+
+' ====================================================================
+'  STEP 4: FREQUENCY COUNTER — The Data Structure (KEY)
+' ====================================================================
+interface FrequencyCounter <<Strategy>> {
+    + increment(songId) : void
+    + getCount(songId) : long
+    + getTopK(k) : List<SongFrequency>
+    + reset() : void
+}
+
+class HashMapCounter {
+    - counts : Map<String, Long>
+    --
+    + increment(songId) : void
+    + getCount(songId) : long
+    + getTopK(k) : List<SongFrequency>
+    + reset() : void
+}
+
+class MinHeapCounter {
+    - counts : Map<String, Long>
+    - minHeap : PriorityQueue<SongFrequency>
+    - heapCapacity : int
+    --
+    + increment(songId) : void
+    + getCount(songId) : long
+    + getTopK(k) : List<SongFrequency>
+    + reset() : void
+}
+
+class CountMinSketchCounter {
+    - sketch : int[][]
+    - hashFunctions : List<HashFunction>
+    - topK : MinHeap
+    --
+    + increment(songId) : void
+    + getCount(songId) : long
+    + getTopK(k) : List<SongFrequency>
+    + reset() : void
+}
+
+class SongFrequency {
+    - songId : String
+    - count : long
+}
+
+note bottom of FrequencyCounter #FFE0B2
+    **STEP 4 - The core data structure. (KEY STEP)**
+    "How to count plays and get top-K efficiently?
+    **Strategy Pattern** — algorithm is pluggable."
+
+    "**HashMapCounter**: O(1) increment, O(n log k) topK.
+    Simple. Works for < 100K songs.
+
+    **MinHeapCounter**: maintains a min-heap of size k.
+    O(log k) per increment. TopK is O(k).
+    Best for real-time top-K with bounded memory.
+
+    **CountMinSketchCounter**: probabilistic.
+    O(1) increment, sub-linear memory.
+    For millions of songs with ~1% error tolerance."
+
+    "**This is the interview differentiator.**
+    Discuss time/space tradeoffs here."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+FrequencyCounter <|.. HashMapCounter
+FrequencyCounter <|.. MinHeapCounter
+FrequencyCounter <|.. CountMinSketchCounter
+FrequencyCounter --> SongFrequency : returns >
+PlayTracker --> FrequencyCounter : updates >
+
+
+' ====================================================================
+'  STEP 5: TOP-K ENGINE — Time-Windowed Ranking
+' ====================================================================
+class TopKEngine {
+    - windowCounters : Map<TimeWindow, FrequencyCounter>
+    - songRepository : SongRepository
+    --
+    + getTopK(k, window) : List<SongPlayCount>
+    + getTopK(k, window, genre) : List<SongPlayCount>
+    + refreshWindow(window) : void
+}
+
+class WindowRotator {
+    - rotationIntervalMs : long
+    - currentWindow : FrequencyCounter
+    - previousWindow : FrequencyCounter
+    --
+    + rotate() : void
+    + getCurrentCounter() : FrequencyCounter
+    + getMergedCount(songId) : long
+}
+
+note bottom of TopKEngine #FFE0B2
+    **STEP 5 - Time-windowed top-K.**
+    "getTopK(10, LAST_24_HOURS) must only count
+    plays from the last 24 hours."
+
+    "**TopKEngine** maintains separate counters
+    per TimeWindow. **WindowRotator** manages
+    sliding windows: rotates every hour,
+    merges current + previous for overlap."
+
+    "For genre filtering: post-filter top-K
+    results or maintain per-genre counters."
+end note
+
+TopKEngine --> FrequencyCounter : per window >
+TopKEngine --> WindowRotator : rotates >
+TopKEngine --> SongPlayCount : returns >
+MusicAnalyticsService --> TopKEngine
+
+
+' ====================================================================
+'  STEP 6: SORT STRATEGY
+' ====================================================================
+interface SortStrategy <<Strategy>> {
+    + sort(results) : List<SongPlayCount>
+}
+
+class SortByPlayCount {
+    --
+    + sort(results) : List<SongPlayCount>
+}
+
+class SortByTrending {
+    - decayFactor : double
+    --
+    + sort(results) : List<SongPlayCount>
+}
+
+class SortByRecencyWeighted {
+    --
+    + sort(results) : List<SongPlayCount>
+}
+
+note bottom of SortStrategy #D1C4E9
+    **STEP 6 - How to rank?**
+    "Top-K by raw play count is simple.
+    But 'trending' is different.
+    **Strategy Pattern** — ranking is pluggable."
+
+    "**SortByPlayCount**: pure frequency (default).
+    **SortByTrending**: recent plays weighted more
+    (exponential decay — a song played 100x
+    today beats 200x last week).
+    **SortByRecencyWeighted**: factors in release date."
+    **Pattern: Strategy | OCP**
+end note
+
+SortStrategy <|.. SortByPlayCount
+SortStrategy <|.. SortByTrending
+SortStrategy <|.. SortByRecencyWeighted
+TopKEngine --> SortStrategy : ranks with >
+
+
+' ====================================================================
+'  STEP 7: CACHE — Decorator Pattern
+' ====================================================================
+class CacheManager {
+    - cache : Map<CacheKey, CachedResult>
+    - ttlSeconds : int
+    - evictionPolicy : CacheEvictionPolicy
+    --
+    + get(key) : CachedResult
+    + put(key, result) : void
+    + invalidate(key) : void
+    + invalidateAll() : void
+}
+
+class CacheKey {
+    - k : int
+    - timeWindow : TimeWindow
+    - genre : Genre
+    --
+    + hashCode() : int
+    + equals(other) : boolean
+}
+
+class CachedResult {
+    - results : List<SongPlayCount>
+    - cachedAt : LocalDateTime
+    - ttl : int
+    --
+    + isExpired() : boolean
+}
+
+interface CacheEvictionPolicy <<Strategy>> {
+    + evict(cache) : void
+}
+
+class LRUCacheEviction {
+    + evict(cache) : void
+}
+
+class TTLCacheEviction {
+    + evict(cache) : void
+}
+
+note bottom of CacheManager #B2EBF2
+    **STEP 7 - Cache hot queries.**
+    "getTopK(10, LAST_24_HOURS) is called
+    millions of times. Same result for seconds."
+
+    "CacheManager caches by (k, window, genre).
+    TTL-based: refresh every 60 seconds.
+    **Strategy** for eviction: LRU or TTL-based."
+
+    "On recordPlay(), selective cache
+    invalidation. Stale data acceptable
+    for non-critical dashboards."
+    **Pattern: Strategy | SRP**
+end note
+
+CacheManager --> CacheKey
+CacheManager --> CachedResult
+CacheEvictionPolicy <|.. LRUCacheEviction
+CacheEvictionPolicy <|.. TTLCacheEviction
+CacheManager --> CacheEvictionPolicy : delegates >
+MusicAnalyticsService --> CacheManager
+
+
+' ====================================================================
+'  STEP 8: OBSERVER — React to Play Events
+' ====================================================================
+interface PlayEventObserver <<Observer>> {
+    + onPlayEvent(event) : void
+}
+
+class TopKRefreshObserver {
+    - topKEngine : TopKEngine
+    --
+    + onPlayEvent(event) : void
+}
+
+class UserHistoryObserver {
+    --
+    + onPlayEvent(event) : void
+}
+
+class CacheInvalidationObserver {
+    - cacheManager : CacheManager
+    --
+    + onPlayEvent(event) : void
+}
+
+class AnalyticsObserver {
+    --
+    + onPlayEvent(event) : void
+}
+
+note bottom of PlayEventObserver #B2EBF2
+    **STEP 8 - React to every play.**
+    "On each recordPlay(), multiple things
+    must happen. **Observer Pattern**:"
+
+    "**TopKRefreshObserver**: updates frequency
+    counter in the engine.
+    **UserHistoryObserver**: adds to user's
+    personal play history.
+    **CacheInvalidationObserver**: invalidates
+    stale cached top-K results.
+    **AnalyticsObserver**: logs for ML pipeline."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+PlayEventObserver <|.. TopKRefreshObserver
+PlayEventObserver <|.. UserHistoryObserver
+PlayEventObserver <|.. CacheInvalidationObserver
+PlayEventObserver <|.. AnalyticsObserver
+PlayTracker --> PlayEventObserver : notifies >
+TopKRefreshObserver --> TopKEngine
+CacheInvalidationObserver --> CacheManager
+
+
+' ====================================================================
+'  SONG REPOSITORY
+' ====================================================================
+interface SongRepository <<Repository>> {
+    + getSong(songId) : Song
+    + getSongs(songIds) : List<Song>
+    + getSongsByGenre(genre) : List<Song>
+}
+
+class InMemorySongRepository {
+    - songs : Map<String, Song>
+    --
+    + getSong(songId) : Song
+    + getSongs(songIds) : List<Song>
+}
+
+class DatabaseSongRepository {
+    --
+    + getSong(songId) : Song
+    + getSongs(songIds) : List<Song>
+}
+
+SongRepository <|.. InMemorySongRepository
+SongRepository <|.. DatabaseSongRepository
+TopKEngine --> SongRepository : hydrates >
+MusicAnalyticsService --> SongRepository
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "User plays a song -> PlayTracker records event, updates
+    FrequencyCounter, notifies observers (**Observer**). Counter maintains
+    running counts — **HashMap** for simplicity, **MinHeap** for bounded
+    memory top-K, **CountMinSketch** for millions of songs (**Strategy**).
+    TopKEngine manages per-window counters with rotation. Results sorted
+    by play count or trending score (**Sort Strategy**). Hot queries cached
+    with TTL. The core interview discussion is Step 4: time/space
+    tradeoffs of the frequency counting data structure.
+    5 patterns: **Facade, Strategy (x4), Repository, Observer**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | recordPlay() + getTopKSongs(k, window) API | Facade | SRP, DIP |
+    | 2 | Song, SongPlayCount (result), TimeWindow, Genre | -- | SRP |
+    | 3 | PlayEvent stored, counter updated, observers notified | Repository | DIP, OCP |
+    | 4 | HashMap (simple) vs MinHeap (bounded) vs CountMinSketch (probabilistic) | Strategy (core) | OCP, DIP |
+    | 5 | Per-window counters, WindowRotator for sliding windows | -- | SRP |
+    | 6 | Rank by raw count vs trending (decay) vs recency-weighted | Strategy (sort) | OCP |
+    | 7 | Cache top-K results, TTL-based refresh, LRU eviction | Strategy (cache) | SRP |
+    | 8 | TopK refresh, user history, cache invalidation, analytics | Observer | OCP, SRP |
+    |  |  |  |  |
+    | **Write Path** (recordPlay) = Steps 3,4,8 | **Read Path** (getTopK) = Steps 5,6,7 | **Data Structure** = Step 4 (discuss tradeoffs!) |  |
+endlegend
+
+@enduml

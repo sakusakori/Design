@@ -1,0 +1,399 @@
+@startuml Splitwise_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Splitwise - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "3 friends create a group. Alice pays Rs 3000 dinner. Split equally. Balance sheets updated. Everyone sees who owes whom."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — Splitwise
+' ====================================================================
+class Splitwise <<Facade>> {
+    - userController : UserController
+    - groupController : GroupController
+    - balanceSheetController : BalanceSheetController
+    --
+    + demo() : void
+    + setupUserAndGroup() : void
+    - addUsersToSplitwiseApp() : void
+}
+
+note top of Splitwise #BBDEFB
+    **STEP 1 - Start here.**
+    "Splitwise is the **Facade** — the main
+    entry point. It coordinates three
+    controllers: UserController (manage users),
+    GroupController (manage groups),
+    BalanceSheetController (manage balances)."
+
+    "Client creates a Splitwise instance and
+    calls methods on it. Never touches
+    controllers directly."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+Splitwise --> UserController
+Splitwise --> GroupController
+Splitwise --> BalanceSheetController
+
+
+' ====================================================================
+'  STEP 2: USER + BALANCE SHEET
+' ====================================================================
+class User {
+    - userId : string
+    - userName : string
+    - userExpenseBalanceSheet : UserExpenseBalanceSheet*
+    --
+    + User(id, userName)
+    + getUserId() : string
+    + getUserExpenseBalanceSheet() : UserExpenseBalanceSheet*
+}
+
+class UserExpenseBalanceSheet {
+    - userVsBalance : map<string, Balance*>
+    - totalYourExpense : double
+    - totalPayment : double
+    - totalYouOwe : double
+    - totalYouGetBack : double
+    --
+    + getUserVsBalance() : map<string, Balance*>&
+    + getTotalYourExpense() : double
+    + setTotalYourExpense(val) : void
+    + getTotalYouOwe() : double
+    + setTotalYouOwe(val) : void
+    + getTotalYouGetBack() : double
+    + setTotalYouGetBack(val) : void
+    + getTotalPayment() : double
+    + setTotalPayment(val) : void
+}
+
+class Balance {
+    - amountOwe : double
+    - amountGetBack : double
+    --
+    + Balance()
+    + getAmountOwe() : double
+    + setAmountOwe(amount) : void
+    + getAmountGetBack() : double
+    + setAmountGetBack(amount) : void
+}
+
+class UserController {
+    - userList : vector<User*>
+    --
+    + addUser(user) : void
+    + getUser(userID) : User*
+    + getAllUsers() : vector<User*>&
+}
+
+note top of User #C8E6C9
+    **STEP 2 - Who is splitting?**
+    "Each **User** has a userId, name, and owns
+    a **UserExpenseBalanceSheet** — the ledger
+    that tracks everything."
+
+    "**UserExpenseBalanceSheet** has:
+    - userVsBalance: map of userId -> Balance
+      (how much I owe/get from each friend)
+    - totalYouOwe: aggregate I owe to all
+    - totalYouGetBack: aggregate owed to me
+    - totalPayment: total I've paid
+    - totalYourExpense: total my share"
+
+    "**Balance** is a pair: amountOwe + amountGetBack
+    between two specific users."
+end note
+
+User *-- UserExpenseBalanceSheet : owns >
+UserExpenseBalanceSheet o-- Balance : per-user balance >
+UserController o--> User : manages >
+
+
+' ====================================================================
+'  STEP 3: GROUP — Contains Users + Expenses
+' ====================================================================
+class Group {
+    - groupId : string
+    - groupName : string
+    - groupMembers : vector<User*>
+    - expenseList : vector<Expense*>
+    - expenseController : ExpenseController
+    --
+    + addMember(member) : void
+    + getGroupId() : string
+    + setGroupId(id) : void
+    + setGroupName(name) : void
+    + createExpense(expenseId, description, amount, splits, splitType, paidBy) : Expense*
+}
+
+class GroupController {
+    - groupList : vector<Group*>
+    --
+    + createNewGroup(groupId, groupName, createdBy) : void
+    + getGroup(groupId) : Group*
+}
+
+note top of Group #C8E6C9
+    **STEP 3 - The group.**
+    "Friends create a **Group** (e.g., 'Goa Trip').
+    Group has members and an expense list.
+    When someone creates an expense,
+    Group delegates to ExpenseController."
+
+    "GroupController manages all groups.
+    createNewGroup() creates a Group and
+    adds the creator as the first member."
+end note
+
+Group o--> User : has members >
+Group o--> Expense : has expenses >
+Group --> ExpenseController : delegates >
+GroupController o--> Group : manages >
+
+
+' ====================================================================
+'  STEP 4: EXPENSE MODEL
+' ====================================================================
+class Expense {
+    - expenseId : string
+    - description : string
+    - expenseAmount : double
+    - paidByUser : User*
+    - splitType : ExpenseSplitType
+    - splitDetails : vector<Split*>
+    --
+    + Expense(id, amount, desc, paidBy, splitType, splits)
+}
+
+class Split {
+    - user : User*
+    - amountOwe : double
+    --
+    + Split(user, amountOwe)
+    + getUser() : User*
+    + setUser(user) : void
+    + getAmountOwe() : double
+    + setAmountOwe(amount) : void
+}
+
+enum ExpenseSplitType {
+    EQUAL
+    UNEQUAL
+    PERCENTAGE
+}
+
+note top of Expense #FFCDD2
+    **STEP 4 - The expense.**
+    "Alice pays Rs 3000 for dinner.
+    **Expense** captures: who paid (Alice),
+    how much (3000), description ('dinner'),
+    split type (EQUAL), and the split details."
+
+    "**Split** = one user's share.
+    3 friends, EQUAL split = 3 Splits of Rs 1000 each.
+    Split is the basic unit of 'who owes what
+    in this specific expense.'"
+end note
+
+Expense --> User : paid by >
+Expense --> ExpenseSplitType
+Expense *-- Split : split among >
+Split --> User : user owes >
+
+
+' ====================================================================
+'  STEP 5: SPLIT VALIDATION — Strategy + Factory (KEY STEP)
+' ====================================================================
+abstract class ExpenseSplit <<Strategy>> {
+    --
+    + {abstract} validateSplitRequest(splits, totalAmount) : void
+}
+
+class EqualExpenseSplit <<ConcreteStrategy>> {
+    --
+    + validateSplitRequest(splits, totalAmount) : void
+}
+
+class UnequalExpenseSplit <<ConcreteStrategy>> {
+    --
+    + validateSplitRequest(splits, totalAmount) : void
+}
+
+class PercentageExpenseSplit <<ConcreteStrategy>> {
+    --
+    + validateSplitRequest(splits, totalAmount) : void
+}
+
+class SplitFactory <<Factory>> {
+    --
+    + {static} getSplitObject(splitType) : ExpenseSplit*
+}
+
+note top of ExpenseSplit #FFE0B2
+    **STEP 5 - How to split? (KEY STEP)**
+    "How the expense is divided varies:
+    **Strategy Pattern** — split validation
+    is pluggable via ExpenseSplit interface."
+
+    "**EqualExpenseSplit**: validates all shares
+    are equal and sum to total (3000/3=1000 each).
+    **UnequalExpenseSplit**: validates custom
+    amounts sum to total (1500+1000+500=3000).
+    **PercentageExpenseSplit**: validates
+    percentages sum to 100% (50%+30%+20%)."
+
+    "**SplitFactory** returns the right strategy:
+    getSplitObject(EQUAL) -> EqualExpenseSplit.
+    Add WeightedSplit? One new class + one
+    factory case."
+    **Patterns: Strategy + Factory | OCP, DIP, LSP**
+end note
+
+ExpenseSplit <|-- EqualExpenseSplit
+ExpenseSplit <|-- UnequalExpenseSplit
+ExpenseSplit <|-- PercentageExpenseSplit
+SplitFactory --> ExpenseSplit : creates >
+SplitFactory --> ExpenseSplitType : based on >
+
+
+' ====================================================================
+'  STEP 6: EXPENSE CONTROLLER — Orchestrates Creation
+' ====================================================================
+class ExpenseController {
+    - balanceSheetController : BalanceSheetController
+    --
+    + createExpense(expenseId, description, amount, splits, splitType, paidBy) : Expense*
+}
+
+note top of ExpenseController #FFCDD2
+    **STEP 6 - Expense creation flow.**
+    "ExpenseController.createExpense() is
+    where it all comes together:"
+
+    "1. Call SplitFactory.getSplitObject(EQUAL)
+       -> returns EqualExpenseSplit
+    2. Call validateSplitRequest(splits, 3000)
+       -> validates splits are correct
+    3. Create Expense object
+    4. Call balanceSheetController
+       .updateUserExpenseBalanceSheet()
+       -> updates ALL users' balance sheets
+    5. Return the created Expense"
+
+    "Validation is decoupled from creation
+    via Strategy. Balance update is decoupled
+    via BalanceSheetController."
+    **Pattern: Controller/Service | SRP**
+end note
+
+ExpenseController --> SplitFactory : uses >
+ExpenseController --> BalanceSheetController : updates balances >
+ExpenseController --> Expense : creates >
+
+
+' ====================================================================
+'  STEP 7: BALANCE SHEET CONTROLLER — Core Calculation
+' ====================================================================
+class BalanceSheetController {
+    --
+    + updateUserExpenseBalanceSheet(paidBy, splits, totalAmount) : void
+    + showBalanceSheetOfUser(user) : void
+}
+
+note top of BalanceSheetController #D1C4E9
+    **STEP 7 - Balance calculation. (KEY STEP)**
+    "updateUserExpenseBalanceSheet() is the
+    heart of the financial logic:"
+
+    "Alice paid 3000, split equally among
+    Alice, Bob, Charlie (1000 each)."
+
+    "**For Alice (the payer):**
+    totalPayment += 3000
+    totalYourExpense += 1000 (her share)
+    For Bob's split: Alice.getBack += 1000
+    For Charlie's split: Alice.getBack += 1000
+    totalYouGetBack += 2000"
+
+    "**For Bob (owes Alice):**
+    totalYourExpense += 1000
+    totalYouOwe += 1000
+    Bob's balance vs Alice: amountOwe += 1000"
+
+    "**For Charlie (owes Alice):**
+    Same as Bob."
+
+    "showBalanceSheetOfUser() prints the
+    complete ledger for any user."
+end note
+
+
+' ====================================================================
+'  CONNECTIONS
+' ====================================================================
+Splitwise --> UserController : manages users >
+Splitwise --> GroupController : manages groups >
+Splitwise --> BalanceSheetController : shows balances >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "3 friends create a group. Alice pays Rs 3000 dinner,
+    split EQUAL. Group.createExpense() -> ExpenseController gets
+    EqualExpenseSplit from **SplitFactory** (**Factory**) -> validates
+    splits via **Strategy Pattern** -> creates Expense -> BalanceSheet
+    Controller updates every user's ledger: Alice getBack=2000,
+    Bob owes=1000, Charlie owes=1000."
+
+    "Key patterns: **Facade** (Splitwise), **Strategy** (ExpenseSplit:
+    Equal/Unequal/Percentage), **Factory** (SplitFactory creates
+    strategy), **Controller/Service** (ExpenseController, BalanceSheet
+    Controller), **Repository** (UserController, GroupController).
+    Composition throughout: User->BalanceSheet->Balance."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | Client uses Splitwise facade | Facade | Hides 3 controllers |
+    | 2 | User owns UserExpenseBalanceSheet with per-friend Balances | Composition | User -> BalanceSheet -> Balance |
+    | 3 | Group has members + expenses, delegates to ExpenseController | Composition | Group contains users + expenses |
+    | 4 | Expense: who paid, how much, split type, split details | -- | Split = one user's share |
+    | 5 | EqualExpenseSplit / UnequalExpenseSplit / PercentageExpenseSplit | Strategy + Factory | SplitFactory creates strategy |
+    | 6 | ExpenseController: validate -> create -> update balances | Controller | Orchestrates the flow |
+    | 7 | BalanceSheetController: updates all users' owe/getBack amounts | Controller | Core financial logic |
+    |  |  |  |  |
+    | **Create Expense** = Steps 4-6 | **Balance Calc** = Step 7 | **Split Logic** = Step 5 (Strategy+Factory) |  |
+endlegend
+
+@enduml

@@ -1,0 +1,535 @@
+@startuml CouponSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Coupon System on Shopping Cart (Annotated for Interview)</size>\n<size:11>Trace: "Cart has Rs 2000 of items. User applies 'FLAT200' coupon. System validates, checks eligibility, calculates discount, applies. Total: Rs 1800."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class CouponService <<Facade>> {
+    - couponRepository : CouponRepository
+    - validationChain : CouponValidator
+    - discountEngine : DiscountEngine
+    --
+    + applyCoupon(cart, couponCode) : DiscountResult
+    + removeCoupon(cart) : void
+    + validateCoupon(cart, couponCode) : ValidationResult
+    + getAvailableCoupons(cart) : List<Coupon>
+    + createCoupon(coupon) : Coupon
+    + deactivateCoupon(couponId) : void
+}
+
+note top of CouponService #BBDEFB
+    **STEP 1 - Start here.**
+    "User has a cart with items. Types coupon
+    code 'FLAT200'. Client calls
+    applyCoupon(cart, 'FLAT200')."
+
+    "CouponService is the **Facade** — coordinates:
+    1. Look up coupon from repository
+    2. Validate via validation chain
+    3. Calculate discount via engine
+    4. Apply to cart and return result."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CART + PRODUCT MODELS
+' ====================================================================
+class Cart {
+    - cartId : String
+    - userId : String
+    - items : List<CartItem>
+    - appliedCoupon : Coupon
+    - discountAmount : double
+    --
+    + addItem(product, qty) : void
+    + removeItem(productId) : void
+    + getSubtotal() : double
+    + getTotal() : double
+    + getItems() : List<CartItem>
+    + applyCoupon(coupon, discount) : void
+    + removeCoupon() : void
+    + getAppliedCoupon() : Coupon
+    + getItemsByCategory(cat) : List<CartItem>
+}
+
+class CartItem {
+    - product : Product
+    - quantity : int
+    --
+    + getSubtotal() : double
+    + getProduct() : Product
+    + getQuantity() : int
+}
+
+class Product {
+    - productId : String
+    - name : String
+    - price : double
+    - category : ProductCategory
+    - brand : String
+    - sellerId : String
+    --
+    + getPrice() : double
+    + getCategory() : ProductCategory
+    + getBrand() : String
+}
+
+enum ProductCategory {
+    ELECTRONICS
+    CLOTHING
+    GROCERY
+    BOOKS
+    BEAUTY
+    HOME
+}
+
+note top of Cart #C8E6C9
+    **STEP 2 - The shopping cart.**
+    "**Cart** has items, a subtotal, and optionally
+    an applied coupon with calculated discount.
+    getTotal() = getSubtotal() - discountAmount."
+
+    "**CartItem** = Product + quantity.
+    **Product** has price, category, brand.
+    Category and brand matter because coupons
+    can target specific categories/brands."
+end note
+
+Cart *-- CartItem : contains >
+CartItem --> Product : for >
+Product --> ProductCategory
+CouponService --> Cart : applies to >
+
+
+' ====================================================================
+'  STEP 3: COUPON MODEL
+' ====================================================================
+class Coupon {
+    - couponId : String
+    - code : String
+    - description : String
+    - discountType : DiscountType
+    - discountValue : double
+    - maxDiscount : double
+    - minCartValue : double
+    - applicableCategories : Set<ProductCategory>
+    - applicableBrands : Set<String>
+    - applicableProducts : Set<String>
+    - startDate : LocalDate
+    - endDate : LocalDate
+    - maxUsageTotal : int
+    - maxUsagePerUser : int
+    - currentUsageCount : int
+    - isActive : bool
+    - isStackable : bool
+    --
+    + isValid() : bool
+    + isExpired() : bool
+    + isUsageLimitReached() : bool
+    + appliesToCategory(cat) : bool
+    + appliesToBrand(brand) : bool
+    + isUniversal() : bool
+}
+
+enum DiscountType {
+    FLAT_AMOUNT
+    PERCENTAGE
+    BUY_X_GET_Y
+    FREE_SHIPPING
+    CASHBACK
+}
+
+class CouponRepository {
+    - coupons : Map<String, Coupon>
+    - codeIndex : Map<String, Coupon>
+    --
+    + findByCode(code) : Coupon
+    + findById(couponId) : Coupon
+    + save(coupon) : void
+    + getActiveCoupons() : List<Coupon>
+    + incrementUsage(couponId) : void
+}
+
+note top of Coupon #FFCDD2
+    **STEP 3 - The coupon.**
+    "**Coupon** is the richest model in the system:
+    - discountType: FLAT_AMOUNT / PERCENTAGE /
+      BUY_X_GET_Y / FREE_SHIPPING / CASHBACK
+    - discountValue: Rs 200 or 15%
+    - maxDiscount: cap at Rs 500 (for percentage)
+    - minCartValue: 'min order Rs 999'
+    - applicableCategories: only ELECTRONICS
+    - applicableBrands: only 'Nike'
+    - startDate/endDate: validity window
+    - maxUsageTotal: 1000 total uses
+    - maxUsagePerUser: 1 per user
+    - isStackable: can combine with other coupons?"
+
+    "**isUniversal()**: no category/brand/product
+    restriction — applies to entire cart."
+end note
+
+Coupon --> DiscountType
+CouponRepository o--> Coupon : stores >
+CouponService --> CouponRepository
+
+
+' ====================================================================
+'  STEP 4: VALIDATION — Chain of Responsibility (KEY)
+' ====================================================================
+abstract class CouponValidator <<Handler>> {
+    # nextValidator : CouponValidator
+    --
+    + setNext(validator) : CouponValidator
+    + {abstract} validate(cart, coupon) : ValidationResult
+}
+
+class ExpiryValidator {
+    + validate(cart, coupon) : ValidationResult
+}
+
+class MinCartValueValidator {
+    + validate(cart, coupon) : ValidationResult
+}
+
+class UsageLimitValidator {
+    - usageStore : Map<String, Map<String, Integer>>
+    --
+    + validate(cart, coupon) : ValidationResult
+}
+
+class CategoryValidator {
+    + validate(cart, coupon) : ValidationResult
+}
+
+class StackabilityValidator {
+    + validate(cart, coupon) : ValidationResult
+}
+
+class ActiveStatusValidator {
+    + validate(cart, coupon) : ValidationResult
+}
+
+class ValidationResult {
+    - valid : bool
+    - errorMessage : String
+    - errorCode : String
+}
+
+note top of CouponValidator #FFE0B2
+    **STEP 4 - Validate the coupon. (KEY STEP)**
+    "User enters 'FLAT200'. Is it valid for this cart?
+    **Chain of Responsibility** — validators run
+    in sequence. If any fails, reject immediately."
+
+    "1. **ActiveStatusValidator**: is coupon active?
+    2. **ExpiryValidator**: is it within date range?
+    3. **MinCartValueValidator**: cart >= Rs 999?
+    4. **UsageLimitValidator**: user hasn't exceeded
+       per-user limit? Total uses not exceeded?
+    5. **CategoryValidator**: does cart contain items
+       from applicable categories/brands?
+    6. **StackabilityValidator**: if cart already has
+       a coupon, is this one stackable?"
+
+    "Each validator checks one condition and passes
+    to next. Add FirstTimeUserValidator? Insert
+    in chain. Nothing else changes."
+    **Pattern: Chain of Responsibility | OCP, SRP**
+end note
+
+CouponValidator <|-- ExpiryValidator
+CouponValidator <|-- MinCartValueValidator
+CouponValidator <|-- UsageLimitValidator
+CouponValidator <|-- CategoryValidator
+CouponValidator <|-- StackabilityValidator
+CouponValidator <|-- ActiveStatusValidator
+CouponValidator o--> CouponValidator : next >
+CouponValidator --> ValidationResult : returns >
+CouponService --> CouponValidator : validates via >
+
+
+' ====================================================================
+'  STEP 5: DISCOUNT CALCULATION — Strategy Pattern (KEY)
+' ====================================================================
+class DiscountEngine {
+    - strategies : Map<DiscountType, DiscountStrategy>
+    --
+    + calculateDiscount(cart, coupon) : DiscountResult
+    + registerStrategy(type, strategy) : void
+}
+
+interface DiscountStrategy <<Strategy>> {
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class FlatAmountDiscount {
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class PercentageDiscount {
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class BuyXGetYDiscount {
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class FreeShippingDiscount {
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class CashbackDiscount {
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class DiscountResult {
+    - success : bool
+    - discountAmount : double
+    - discountedItems : Map<String, Double>
+    - message : String
+    - originalTotal : double
+    - finalTotal : double
+    --
+    + getSavingsPercent() : double
+}
+
+note top of DiscountStrategy #FFE0B2
+    **STEP 5 - Calculate the discount. (KEY STEP)**
+    "Coupon validated. Now how much discount?"
+
+    "**Strategy Pattern** — each discount type
+    has its own calculation logic."
+
+    "**FlatAmountDiscount**: 'FLAT200' -> Rs 200 off.
+    If category-specific: only discount applicable items."
+
+    "**PercentageDiscount**: '15OFF' -> 15% off.
+    Capped by coupon.maxDiscount (e.g., max Rs 500)."
+
+    "**BuyXGetYDiscount**: 'BUY2GET1' -> cheapest
+    item free when buying 3 of same category."
+
+    "**FreeShippingDiscount**: waives shipping fee."
+
+    "**CashbackDiscount**: 10% back as store credit."
+
+    "DiscountEngine maps DiscountType -> Strategy.
+    Add TieredDiscount (10% on 1000, 20% on 2000)?
+    One new class."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+DiscountStrategy <|.. FlatAmountDiscount
+DiscountStrategy <|.. PercentageDiscount
+DiscountStrategy <|.. BuyXGetYDiscount
+DiscountStrategy <|.. FreeShippingDiscount
+DiscountStrategy <|.. CashbackDiscount
+DiscountEngine --> DiscountStrategy : delegates >
+DiscountEngine --> DiscountResult : returns >
+CouponService --> DiscountEngine
+
+
+' ====================================================================
+'  STEP 6: CATEGORY-SPECIFIC DISCOUNT — Decorator Pattern
+' ====================================================================
+abstract class DiscountDecorator <<Decorator>> {
+    # wrapped : DiscountStrategy
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class CategoryFilterDecorator {
+    - applicableCategories : Set<ProductCategory>
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class BrandFilterDecorator {
+    - applicableBrands : Set<String>
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+class MaxCapDecorator {
+    - maxDiscount : double
+    --
+    + calculate(cart, coupon) : DiscountResult
+}
+
+note bottom of DiscountDecorator #D1C4E9
+    **STEP 6 - Layer discount rules.**
+    "**Decorator Pattern** — layer conditions
+    on top of base discount strategy."
+
+    "'15% off on Electronics, max Rs 500':
+    new MaxCapDecorator(500,
+      new CategoryFilterDecorator(ELECTRONICS,
+        new PercentageDiscount()))."
+
+    "**CategoryFilterDecorator**: filters cart
+    to only applicable items before calculating.
+    **BrandFilterDecorator**: same for brands.
+    **MaxCapDecorator**: caps the final discount."
+
+    "Composable: stack any combination without
+    modifying base strategies."
+    **Pattern: Decorator | OCP, SRP**
+end note
+
+DiscountStrategy <|.. DiscountDecorator
+DiscountDecorator o--> DiscountStrategy : wraps >
+DiscountDecorator <|-- CategoryFilterDecorator
+DiscountDecorator <|-- BrandFilterDecorator
+DiscountDecorator <|-- MaxCapDecorator
+
+
+' ====================================================================
+'  STEP 7: BEST COUPON SUGGESTION
+' ====================================================================
+interface CouponRankingStrategy <<Strategy>> {
+    + rank(coupons, cart) : List<Coupon>
+}
+
+class MaxSavingsRanking {
+    - discountEngine : DiscountEngine
+    --
+    + rank(coupons, cart) : List<Coupon>
+}
+
+class PopularityRanking {
+    --
+    + rank(coupons, cart) : List<Coupon>
+}
+
+note bottom of CouponRankingStrategy #C8E6C9
+    **STEP 7 - Suggest best coupon.**
+    "getAvailableCoupons(cart): find all valid
+    coupons for this cart. How to sort them?"
+
+    "**Strategy Pattern:**
+    **MaxSavingsRanking**: calculate discount for
+    each coupon, sort by highest savings.
+    Shows 'SAVE Rs 500 with FLAT500' first.
+    **PopularityRanking**: sort by usage count."
+    **Pattern: Strategy | OCP**
+end note
+
+CouponRankingStrategy <|.. MaxSavingsRanking
+CouponRankingStrategy <|.. PopularityRanking
+CouponService --> CouponRankingStrategy : ranks with >
+
+
+' ====================================================================
+'  STEP 8: OBSERVER — Notify on coupon events
+' ====================================================================
+interface CouponObserver <<Observer>> {
+    + onCouponEvent(cart, coupon, event) : void
+}
+
+class UsageTrackingObserver {
+    - couponRepository : CouponRepository
+    --
+    + onCouponEvent(cart, coupon, event) : void
+}
+
+class AnalyticsObserver {
+    --
+    + onCouponEvent(cart, coupon, event) : void
+}
+
+class PriceUpdateObserver {
+    --
+    + onCouponEvent(cart, coupon, event) : void
+}
+
+note bottom of CouponObserver #B2EBF2
+    **STEP 8 - React to coupon events.**
+    "On applyCoupon / removeCoupon:"
+
+    "**UsageTrackingObserver**: increments coupon's
+    usage count (for limit enforcement).
+    **AnalyticsObserver**: logs which coupons are
+    used, conversion rate, avg discount.
+    **PriceUpdateObserver**: recalculates cart
+    total and updates the UI display."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+CouponObserver <|.. UsageTrackingObserver
+CouponObserver <|.. AnalyticsObserver
+CouponObserver <|.. PriceUpdateObserver
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Cart has Rs 2000 of items. User enters 'FLAT200'.
+    CouponService looks up coupon -> **Chain of Responsibility**
+    validates: active? not expired? cart >= minValue? usage limit OK?
+    category match? -> All pass. **DiscountStrategy** (FlatAmountDiscount)
+    calculates Rs 200 off. If category-specific, **Decorator** filters
+    applicable items first. **MaxCapDecorator** ensures cap.
+    Result: Rs 1800. Observer updates usage count + analytics."
+
+    "6 patterns: **Facade**, **Chain of Responsibility** (validation),
+    **Strategy** (x2: discount calculation + coupon ranking),
+    **Decorator** (category/brand filter + max cap on discounts),
+    **Observer** (usage tracking, analytics, price update).
+    The Decorator on Strategy is the interview differentiator."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | User enters coupon code, calls CouponService.applyCoupon() | Facade | SRP, DIP |
+    | 2 | Cart has items (Product + quantity), subtotal, category info | Composition | SRP |
+    | 3 | Coupon: type, value, maxDiscount, minCart, categories, expiry, limits | Entity | Rich domain model |
+    | 4 | Active? Expired? MinCart? UsageLimit? Category? Stackable? | Chain of Responsibility | OCP, SRP |
+    | 5 | FlatAmount / Percentage / BuyXGetY / FreeShipping / Cashback | Strategy (discount) | OCP, DIP, LSP |
+    | 6 | CategoryFilter + BrandFilter + MaxCap layered on strategy | Decorator | OCP, SRP |
+    | 7 | Suggest best coupon: MaxSavings / Popularity ranking | Strategy (ranking) | OCP |
+    | 8 | Usage tracking, analytics, price update on apply/remove | Observer | OCP, SRP |
+    |  |  |  |  |
+    | **Validate** = Step 4 (chain) | **Calculate** = Steps 5-6 (strategy + decorator) | **Suggest** = Step 7 |  |
+endlegend
+
+@enduml

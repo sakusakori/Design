@@ -1,0 +1,639 @@
+@startuml UnixFileSearchAPI_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>UNIX File Search API (Annotated for Interview)</size>\n<size:11>Trace: find /home -name "*.java" -size +1M -type f -modified 7 | sort -by size | limit 20</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class FileSearchService <<Facade>> {
+    - fileSystem : FileSystem
+    - traversalStrategy : TraversalStrategy
+    --
+    + search(params) : SearchResult
+    + search(rootDir, filter) : SearchResult
+    + search(rootDir, filter, sort, limit) : SearchResult
+    + count(rootDir, filter) : long
+    + exists(rootDir, filter) : boolean
+    + findFirst(rootDir, filter) : File
+}
+
+note top of FileSearchService #BBDEFB
+    **STEP 1 - Start here.**
+    "Think of the UNIX find command.
+    Client calls search(rootDir, filter).
+    **Facade** hides file system traversal,
+    filter application, sorting, and
+    result collection behind one API."
+
+    "find /home -name '*.java' -size +1M
+    becomes: search('/home',
+      And(NameFilter, SizeFilter))"
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: FILE SYSTEM MODEL — Composite Pattern
+' ====================================================================
+abstract class FileSystemEntry {
+    - name : String
+    - path : String
+    - size : long
+    - createdAt : LocalDateTime
+    - modifiedAt : LocalDateTime
+    - permissions : Set<Permission>
+    - owner : String
+    - group : String
+    --
+    + getName() : String
+    + getPath() : String
+    + getSize() : long
+    + getModifiedAt() : LocalDateTime
+    + getPermissions() : Set<Permission>
+    + getOwner() : String
+    + isHidden() : boolean
+    + {abstract} isDirectory() : boolean
+    + {abstract} getType() : FileType
+}
+
+class File {
+    - extension : String
+    - mimeType : String
+    - content : byte[]
+    --
+    + isDirectory() : boolean
+    + getType() : FileType
+    + getExtension() : String
+    + getMimeType() : String
+}
+
+class Directory {
+    - children : List<FileSystemEntry>
+    --
+    + isDirectory() : boolean
+    + getType() : FileType
+    + getChildren() : List<FileSystemEntry>
+    + addChild(entry) : void
+    + removeChild(name) : void
+    + getChildCount() : int
+}
+
+class SymLink {
+    - target : FileSystemEntry
+    --
+    + isDirectory() : boolean
+    + getType() : FileType
+    + getTarget() : FileSystemEntry
+    + resolveTarget() : FileSystemEntry
+}
+
+enum FileType {
+    REGULAR_FILE
+    DIRECTORY
+    SYMLINK
+    PIPE
+    SOCKET
+    BLOCK_DEVICE
+}
+
+enum Permission {
+    OWNER_READ
+    OWNER_WRITE
+    OWNER_EXECUTE
+    GROUP_READ
+    GROUP_WRITE
+    GROUP_EXECUTE
+    OTHER_READ
+    OTHER_WRITE
+    OTHER_EXECUTE
+}
+
+note top of FileSystemEntry #C8E6C9
+    **STEP 2 - File system is a tree.**
+    "**Composite Pattern**: File and Directory
+    share the same base class FileSystemEntry.
+    Directory contains a list of children
+    (Files or other Directories).
+    SymLink points to another entry."
+
+    "This mirrors real UNIX: everything is
+    an inode. Directory is just a special file
+    that contains other entries. Traversal
+    treats files and directories uniformly."
+    **Pattern: Composite | LSP**
+end note
+
+FileSystemEntry <|-- File
+FileSystemEntry <|-- Directory
+FileSystemEntry <|-- SymLink
+Directory o--> FileSystemEntry : children >
+SymLink --> FileSystemEntry : target >
+FileSystemEntry --> FileType
+FileSystemEntry --> Permission : has >
+
+
+' ====================================================================
+'  STEP 3: FILE SYSTEM ABSTRACTION
+' ====================================================================
+interface FileSystem <<Strategy>> {
+    + getRoot() : Directory
+    + getEntry(path) : FileSystemEntry
+    + exists(path) : boolean
+    + listDirectory(path) : List<FileSystemEntry>
+}
+
+class LocalFileSystem {
+    - rootPath : String
+    --
+    + getRoot() : Directory
+    + getEntry(path) : FileSystemEntry
+    + listDirectory(path) : List<FileSystemEntry>
+}
+
+class InMemoryFileSystem {
+    - root : Directory
+    --
+    + getRoot() : Directory
+    + getEntry(path) : FileSystemEntry
+    + addFile(path, file) : void
+    + listDirectory(path) : List<FileSystemEntry>
+}
+
+class RemoteFileSystem {
+    - host : String
+    - connection : Connection
+    --
+    + getRoot() : Directory
+    + getEntry(path) : FileSystemEntry
+    + listDirectory(path) : List<FileSystemEntry>
+}
+
+note bottom of FileSystem #C8E6C9
+    **STEP 3 - Where are the files?**
+    "**Strategy Pattern** — file system source
+    is pluggable. LocalFileSystem reads from
+    actual disk. InMemoryFileSystem for tests.
+    RemoteFileSystem for networked (NFS/SSH)."
+    **Pattern: Strategy | DIP, OCP**
+end note
+
+FileSystem <|.. LocalFileSystem
+FileSystem <|.. InMemoryFileSystem
+FileSystem <|.. RemoteFileSystem
+FileSearchService --> FileSystem : reads from >
+
+
+' ====================================================================
+'  STEP 4: FILTER INTERFACE — Core Abstraction (Strategy)
+' ====================================================================
+interface Filter <<Strategy>> {
+    + apply(entry : FileSystemEntry) : boolean
+}
+
+note top of Filter #FFE0B2
+    **STEP 4 - The core abstraction. (KEY)**
+    "One interface, one method:
+    apply(entry) -> boolean.
+    Returns true if entry matches.
+    Every filter — simple or complex —
+    implements this. The entire system
+    is built around this single interface."
+    **Pattern: Strategy | ISP, OCP**
+end note
+
+
+' ====================================================================
+'  STEP 5: CONCRETE FILTERS — Leaf Strategies
+' ====================================================================
+class NameFilter {
+    - pattern : String
+    - caseSensitive : boolean
+    - regex : boolean
+    --
+    + apply(entry) : boolean
+}
+
+class ExtensionFilter {
+    - extensions : Set<String>
+    --
+    + apply(entry) : boolean
+}
+
+class SizeFilter {
+    - minBytes : long
+    - maxBytes : long
+    - operator : ComparisonOp
+    --
+    + apply(entry) : boolean
+}
+
+class TypeFilter {
+    - type : FileType
+    --
+    + apply(entry) : boolean
+}
+
+class ModifiedDateFilter {
+    - after : LocalDateTime
+    - before : LocalDateTime
+    - withinDays : int
+    --
+    + apply(entry) : boolean
+}
+
+class PermissionFilter {
+    - requiredPermissions : Set<Permission>
+    --
+    + apply(entry) : boolean
+}
+
+class OwnerFilter {
+    - ownerName : String
+    --
+    + apply(entry) : boolean
+}
+
+class DepthFilter {
+    - maxDepth : int
+    - currentDepth : int
+    --
+    + apply(entry) : boolean
+}
+
+class HiddenFileFilter {
+    - includeHidden : boolean
+    --
+    + apply(entry) : boolean
+}
+
+class ContentFilter {
+    - searchText : String
+    - regex : boolean
+    --
+    + apply(entry) : boolean
+}
+
+enum ComparisonOp {
+    GREATER_THAN
+    LESS_THAN
+    EQUAL_TO
+    BETWEEN
+}
+
+note bottom of NameFilter #FFE0B2
+    **STEP 5 - One filter per criterion.**
+    "Maps to UNIX find flags:
+    **-name** -> NameFilter (glob/regex)
+    **-extension** -> ExtensionFilter (.java, .py)
+    **-size** -> SizeFilter (+1M, -100K)
+    **-type f/d** -> TypeFilter (FILE/DIR)
+    **-mtime** -> ModifiedDateFilter (-7 days)
+    **-perm** -> PermissionFilter (755)
+    **-user** -> OwnerFilter
+    **-maxdepth** -> DepthFilter
+    **-content** -> ContentFilter (like grep)"
+
+    "Each is independent, testable, single
+    responsibility. Add InodeFilter? One class."
+    **Pattern: Strategy | SRP, OCP**
+end note
+
+Filter <|.. NameFilter
+Filter <|.. ExtensionFilter
+Filter <|.. SizeFilter
+Filter <|.. TypeFilter
+Filter <|.. ModifiedDateFilter
+Filter <|.. PermissionFilter
+Filter <|.. OwnerFilter
+Filter <|.. DepthFilter
+Filter <|.. HiddenFileFilter
+Filter <|.. ContentFilter
+SizeFilter --> ComparisonOp
+
+
+' ====================================================================
+'  STEP 6: COMPOSITE FILTERS — AND / OR / NOT
+' ====================================================================
+class AndFilter {
+    - filters : List<Filter>
+    --
+    + AndFilter(filters)
+    + apply(entry) : boolean
+}
+
+class OrFilter {
+    - filters : List<Filter>
+    --
+    + OrFilter(filters)
+    + apply(entry) : boolean
+}
+
+class NotFilter {
+    - filter : Filter
+    --
+    + NotFilter(filter)
+    + apply(entry) : boolean
+}
+
+note top of AndFilter #FFCDD2
+    **STEP 6 - Combine filters. (KEY STEP)**
+    "**Composite Pattern** — And, Or, Not are
+    themselves Filters. Same interface."
+
+    "UNIX: find -name '*.java' -size +1M
+    = And(NameFilter('*.java'), SizeFilter(>1M))"
+
+    "UNIX: find -name '*.java' -o -name '*.kt'
+    = Or(NameFilter('*.java'), NameFilter('*.kt'))"
+
+    "UNIX: find ! -name '*.class'
+    = Not(NameFilter('*.class'))"
+
+    "Nest arbitrarily:
+    And(SizeFilter, Or(ExtFilter, NameFilter))
+    Infinite composability, zero new code."
+    **Pattern: Composite | OCP, LSP**
+end note
+
+Filter <|.. AndFilter
+Filter <|.. OrFilter
+Filter <|.. NotFilter
+AndFilter o--> Filter : children >
+OrFilter o--> Filter : children >
+NotFilter o--> Filter : wraps >
+
+
+' ====================================================================
+'  STEP 7: TRAVERSAL — Strategy Pattern
+' ====================================================================
+interface TraversalStrategy <<Strategy>> {
+    + traverse(root, filter, visitor) : void
+}
+
+class BFSTraversal {
+    --
+    + traverse(root, filter, visitor) : void
+}
+
+class DFSTraversal {
+    --
+    + traverse(root, filter, visitor) : void
+}
+
+class ParallelTraversal {
+    - threadCount : int
+    --
+    + traverse(root, filter, visitor) : void
+}
+
+class MaxDepthTraversal {
+    - maxDepth : int
+    --
+    + traverse(root, filter, visitor) : void
+}
+
+interface FileVisitor <<Visitor>> {
+    + visit(entry) : void
+}
+
+class CollectingVisitor {
+    - results : List<FileSystemEntry>
+    --
+    + visit(entry) : void
+    + getResults() : List<FileSystemEntry>
+}
+
+class CountingVisitor {
+    - count : long
+    --
+    + visit(entry) : void
+    + getCount() : long
+}
+
+class FirstMatchVisitor {
+    - found : FileSystemEntry
+    --
+    + visit(entry) : void
+    + getResult() : FileSystemEntry
+    + isFound() : boolean
+}
+
+note bottom of TraversalStrategy #D1C4E9
+    **STEP 7 - How to walk the tree?**
+    "**Strategy Pattern** — traversal is pluggable.
+    **DFS**: depth-first (default, like real find).
+    **BFS**: breadth-first (find closest matches).
+    **Parallel**: multi-threaded for huge trees.
+    **MaxDepth**: stop at N levels."
+
+    "**Visitor Pattern** — what to do with matches.
+    **CollectingVisitor**: gather all results.
+    **CountingVisitor**: just count (like find | wc -l).
+    **FirstMatchVisitor**: stop at first hit."
+    **Patterns: Strategy + Visitor | OCP, SRP**
+end note
+
+TraversalStrategy <|.. BFSTraversal
+TraversalStrategy <|.. DFSTraversal
+TraversalStrategy <|.. ParallelTraversal
+TraversalStrategy <|.. MaxDepthTraversal
+TraversalStrategy --> FileVisitor : uses >
+FileVisitor <|.. CollectingVisitor
+FileVisitor <|.. CountingVisitor
+FileVisitor <|.. FirstMatchVisitor
+FileSearchService --> TraversalStrategy : delegates >
+
+
+' ====================================================================
+'  STEP 8: SEARCH PARAMS + BUILDER — Fluent API
+' ====================================================================
+class SearchParams {
+    - rootDirectory : String
+    - filter : Filter
+    - sortStrategy : SortStrategy
+    - maxResults : int
+    - traversal : TraversalStrategy
+    - followSymlinks : boolean
+    --
+    + getRootDirectory() : String
+    + getFilter() : Filter
+}
+
+class SearchParamsBuilder <<Builder>> {
+    - rootDir : String
+    - filters : List<Filter>
+    - sortStrategy : SortStrategy
+    - maxResults : int
+    - traversal : TraversalStrategy
+    - followSymlinks : boolean
+    --
+    + root(path) : SearchParamsBuilder
+    + name(pattern) : SearchParamsBuilder
+    + extension(exts) : SearchParamsBuilder
+    + minSize(bytes) : SearchParamsBuilder
+    + maxSize(bytes) : SearchParamsBuilder
+    + type(fileType) : SearchParamsBuilder
+    + modifiedWithinDays(days) : SearchParamsBuilder
+    + owner(name) : SearchParamsBuilder
+    + maxDepth(depth) : SearchParamsBuilder
+    + excludeHidden() : SearchParamsBuilder
+    + containsText(text) : SearchParamsBuilder
+    + or(filter) : SearchParamsBuilder
+    + not(filter) : SearchParamsBuilder
+    + sortBy(strategy) : SearchParamsBuilder
+    + limit(max) : SearchParamsBuilder
+    + parallel(threads) : SearchParamsBuilder
+    + followSymlinks() : SearchParamsBuilder
+    + build() : SearchParams
+}
+
+note bottom of SearchParamsBuilder #D1C4E9
+    **STEP 8 - Fluent API for humans.**
+    "Constructing And(Name, Size, Type) by
+    hand is verbose. **Builder Pattern**:"
+
+    "new SearchParamsBuilder()
+      .root('/home')
+      .extension('java', 'kt')
+      .minSize(1_000_000)
+      .modifiedWithinDays(7)
+      .type(REGULAR_FILE)
+      .excludeHidden()
+      .sortBy(new SortBySize())
+      .limit(20)
+      .build()"
+
+    "Maps to UNIX:
+    find /home -name '*.java' -o -name '*.kt'
+      -size +1M -mtime -7 -type f
+      | sort -by-size | head -20"
+    **Pattern: Builder | SRP**
+end note
+
+SearchParamsBuilder --> SearchParams : builds >
+SearchParams --> Filter : contains >
+SearchParams --> TraversalStrategy
+
+
+' ====================================================================
+'  STEP 9: SORT + RESULT
+' ====================================================================
+interface SortStrategy <<Strategy>> {
+    + sort(entries) : List<FileSystemEntry>
+}
+
+class SortByName {
+    - ascending : boolean
+    --
+    + sort(entries) : List<FileSystemEntry>
+}
+
+class SortBySize {
+    - ascending : boolean
+    --
+    + sort(entries) : List<FileSystemEntry>
+}
+
+class SortByModifiedDate {
+    - ascending : boolean
+    --
+    + sort(entries) : List<FileSystemEntry>
+}
+
+class SortByPath {
+    --
+    + sort(entries) : List<FileSystemEntry>
+}
+
+class SearchResult {
+    - matches : List<FileSystemEntry>
+    - totalScanned : long
+    - matchCount : long
+    - searchTimeMs : long
+    - truncated : boolean
+    --
+    + getMatches() : List<FileSystemEntry>
+    + getMatchCount() : long
+    + getSearchTimeMs() : long
+    + isTruncated() : boolean
+}
+
+note bottom of SortStrategy #D1C4E9
+    **STEP 9 - Sort + result.**
+    "**Strategy Pattern** — sorting is pluggable.
+    By name, size, date, path. Like ls -lS."
+
+    "**SearchResult** includes metadata:
+    totalScanned, matchCount, searchTimeMs,
+    truncated (if limit was hit). Transparent."
+end note
+
+SortStrategy <|.. SortByName
+SortStrategy <|.. SortBySize
+SortStrategy <|.. SortByModifiedDate
+SortStrategy <|.. SortByPath
+FileSearchService --> SortStrategy : sorts with >
+FileSearchService --> SearchResult : returns >
+SearchResult o--> FileSystemEntry : matches >
+SearchParams --> SortStrategy
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "UNIX file system is a tree (**Composite**: File + Directory
+    share one base). Filters are the core: one interface apply(entry) -> bool.
+    Leaf filters (name, size, type, date, owner) are **Strategies**. AndFilter,
+    OrFilter, NotFilter compose them (**Composite** — same interface). Tree
+    traversal is pluggable: DFS/BFS/Parallel (**Strategy**). Visitor decides
+    what to do with matches. Builder gives fluent API.
+    6 patterns: **Composite** (x2: FS tree + filter tree), **Strategy** (x4),
+    **Visitor**, **Builder**, **Facade**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= UNIX Equivalent |= Pattern |= SOLID |
+    | 1 | Client calls FileSearchService.search() | find command | Facade | SRP, DIP |
+    | 2 | File, Directory, SymLink share base class | inodes | Composite (FS tree) | LSP |
+    | 3 | Local / InMemory / Remote file system | local vs NFS | Strategy | DIP, OCP |
+    | 4 | Filter interface: apply(entry) -> boolean | predicate | Strategy (core) | ISP, OCP |
+    | 5 | Name, Size, Type, Date, Owner, Content filters | -name, -size, -type, -mtime, -user | Strategy | SRP, OCP |
+    | 6 | And / Or / Not compose any filters | -a / -o / ! | Composite (filter tree) | OCP, LSP |
+    | 7 | DFS / BFS / Parallel traversal + Visitor | tree walk | Strategy + Visitor | OCP, SRP |
+    | 8 | Fluent builder for search params | find flags | Builder | SRP |
+    | 9 | Sort by name/size/date, SearchResult with metadata | sort, head | Strategy | OCP |
+endlegend
+
+@enduml

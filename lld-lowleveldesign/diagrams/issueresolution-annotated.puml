@@ -1,0 +1,664 @@
+@startuml CustomerIssueResolution_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Customer Issue Resolution System (Annotated for Interview)</size>\n<size:11>Trace: "Customer raises a billing issue. System auto-categorizes, assigns to agent via routing, agent resolves, customer rates resolution."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class IssueResolutionService <<Facade>> {
+    - issues : Map<String, Issue>
+    - agentPool : AgentPool
+    - routingEngine : RoutingEngine
+    - notificationService : NotificationService
+    - escalationService : EscalationService
+    - slaManager : SLAManager
+    --
+    + raiseIssue(customer, type, description) : Issue
+    + resolveIssue(issueId, resolution) : void
+    + escalateIssue(issueId) : void
+    + reopenIssue(issueId, reason) : void
+    + addComment(issueId, author, text) : void
+    + getIssue(issueId) : Issue
+    + getIssuesByCustomer(customerId) : List<Issue>
+    + getAgentWorkload() : Map<String, Integer>
+}
+
+note top of IssueResolutionService #BBDEFB
+    **STEP 1 - Start here.**
+    "Customer calls support or raises a ticket.
+    IssueResolutionService is the **Facade**
+    — single API for raising issues, routing
+    to agents, tracking status, escalation,
+    and resolution. Hides all internal wiring."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CUSTOMER + AGENT MODELS
+' ====================================================================
+class Customer {
+    - customerId : String
+    - name : String
+    - email : String
+    - phone : String
+    - tier : CustomerTier
+    - issueHistory : List<Issue>
+    --
+    + getTier() : CustomerTier
+    + getOpenIssueCount() : int
+}
+
+enum CustomerTier {
+    REGULAR
+    PREMIUM
+    VIP
+    ENTERPRISE
+}
+
+class Agent {
+    - agentId : String
+    - name : String
+    - email : String
+    - department : Department
+    - skills : Set<IssueCategory>
+    - status : AgentStatus
+    - currentLoad : int
+    - maxLoad : int
+    - rating : double
+    --
+    + isAvailable() : boolean
+    + canHandle(category) : boolean
+    + assign() : void
+    + release() : void
+}
+
+enum AgentStatus {
+    AVAILABLE
+    BUSY
+    ON_BREAK
+    OFFLINE
+}
+
+enum Department {
+    BILLING
+    TECHNICAL
+    ACCOUNT
+    SHIPPING
+    GENERAL
+}
+
+class AgentPool {
+    - agents : Map<String, Agent>
+    - departmentIndex : Map<Department, List<Agent>>
+    --
+    + getAvailableAgents(dept) : List<Agent>
+    + getAvailableAgents(dept, skill) : List<Agent>
+    + getAgentLoad() : Map<String, Integer>
+    + registerAgent(agent) : void
+}
+
+note top of Agent #C8E6C9
+    **STEP 2 - Who is involved?**
+    "**Customer** has a tier (REGULAR to VIP)
+    — tier affects SLA and routing priority.
+    **Agent** has department, skills (can handle
+    BILLING, TECHNICAL, etc.), status, and
+    current workload. **AgentPool** indexes
+    agents by department for fast lookup."
+end note
+
+Customer --> CustomerTier
+Agent --> AgentStatus
+Agent --> Department
+Agent --> IssueCategory : skilled in >
+AgentPool o--> Agent : manages >
+IssueResolutionService --> AgentPool
+IssueResolutionService --> Customer : serves >
+
+
+' ====================================================================
+'  STEP 3: ISSUE MODEL — Central Domain Object
+' ====================================================================
+class Issue {
+    - issueId : String
+    - customer : Customer
+    - category : IssueCategory
+    - priority : IssuePriority
+    - description : String
+    - assignedAgent : Agent
+    - currentState : IssueState
+    - status : IssueStatus
+    - comments : List<Comment>
+    - resolution : Resolution
+    - createdAt : LocalDateTime
+    - resolvedAt : LocalDateTime
+    - slaDeadline : LocalDateTime
+    - escalationLevel : int
+    - observers : List<IssueObserver>
+    --
+    + assign(agent) : void
+    + resolve(resolution) : void
+    + escalate() : void
+    + reopen(reason) : void
+    + close() : void
+    + addComment(comment) : void
+    + registerObserver(obs) : void
+    + notifyObservers(event) : void
+    + isSLABreached() : boolean
+}
+
+enum IssueCategory {
+    BILLING
+    TECHNICAL
+    ACCOUNT_ACCESS
+    SHIPPING
+    REFUND
+    FEATURE_REQUEST
+    COMPLAINT
+}
+
+enum IssuePriority {
+    LOW
+    MEDIUM
+    HIGH
+    CRITICAL
+}
+
+enum IssueStatus {
+    OPEN
+    ASSIGNED
+    IN_PROGRESS
+    WAITING_ON_CUSTOMER
+    ESCALATED
+    RESOLVED
+    CLOSED
+    REOPENED
+}
+
+class Comment {
+    - commentId : String
+    - author : String
+    - text : String
+    - timestamp : LocalDateTime
+    - isInternal : boolean
+}
+
+class Resolution {
+    - resolutionType : ResolutionType
+    - description : String
+    - resolvedBy : Agent
+    - resolvedAt : LocalDateTime
+    - customerSatisfied : boolean
+}
+
+enum ResolutionType {
+    FIXED
+    WORKAROUND
+    DUPLICATE
+    WONT_FIX
+    REFUNDED
+    ESCALATED_EXTERNALLY
+}
+
+note top of Issue #FFCDD2
+    **STEP 3 - Issue is the central object.**
+    "Has category, priority, assigned agent,
+    state, SLA deadline, comments, and
+    resolution. Uses **State Pattern**
+    (lifecycle), **Observer** (notifications),
+    and **Chain of Responsibility** (routing)."
+end note
+
+Issue --> IssueCategory
+Issue --> IssuePriority
+Issue --> IssueStatus
+Issue --> Customer : raised by >
+Issue --> Agent : assigned to >
+Issue *-- Comment : has comments >
+Issue --> Resolution : resolved with >
+Resolution --> ResolutionType
+Resolution --> Agent : by >
+
+
+' ====================================================================
+'  STEP 4: ISSUE STATE — State Pattern
+' ====================================================================
+interface IssueState <<State>> {
+    + assign(issue, agent) : void
+    + startWork(issue) : void
+    + waitOnCustomer(issue) : void
+    + resolve(issue, resolution) : void
+    + escalate(issue) : void
+    + reopen(issue, reason) : void
+    + close(issue) : void
+}
+
+class OpenState {
+    + assign(issue, agent) : void
+    + escalate(issue) : void
+    + close(issue) : void
+}
+
+class AssignedState {
+    + startWork(issue) : void
+    + escalate(issue) : void
+    + assign(issue, agent) : void
+}
+
+class InProgressState {
+    + resolve(issue, resolution) : void
+    + waitOnCustomer(issue) : void
+    + escalate(issue) : void
+}
+
+class WaitingOnCustomerState {
+    + startWork(issue) : void
+    + close(issue) : void
+    + escalate(issue) : void
+}
+
+class EscalatedState {
+    + assign(issue, agent) : void
+    + resolve(issue, resolution) : void
+}
+
+class ResolvedState {
+    + reopen(issue, reason) : void
+    + close(issue) : void
+}
+
+class ClosedState {
+    + reopen(issue, reason) : void
+}
+
+note bottom of IssueState #FFCDD2
+    **STEP 4 - Issue lifecycle.**
+    "**State Pattern** — each state is a class.
+    **Open**: just created, can assign/escalate.
+    **Assigned**: agent assigned, can start work.
+    **InProgress**: agent working, can resolve/wait/escalate.
+    **WaitingOnCustomer**: need info from customer.
+    **Escalated**: bumped to senior/manager.
+    **Resolved**: fixed, customer can reopen.
+    **Closed**: terminal (can still reopen)."
+
+    Open -> Assigned -> InProgress -> Resolved -> Closed
+    InProgress -> WaitingOnCustomer -> InProgress
+    Any -> Escalated -> Assigned (reassigned)
+    Resolved/Closed -> Open (reopened)
+    **Pattern: State | SRP, OCP**
+end note
+
+IssueState <|.. OpenState
+IssueState <|.. AssignedState
+IssueState <|.. InProgressState
+IssueState <|.. WaitingOnCustomerState
+IssueState <|.. EscalatedState
+IssueState <|.. ResolvedState
+IssueState <|.. ClosedState
+Issue --> IssueState : delegates >
+
+
+' ====================================================================
+'  STEP 5: ROUTING — Chain of Responsibility
+' ====================================================================
+abstract class RoutingHandler <<Handler>> {
+    # nextHandler : RoutingHandler
+    --
+    + setNext(handler) : RoutingHandler
+    + {abstract} handle(issue) : Agent
+}
+
+class CategoryRoutingHandler {
+    --
+    + handle(issue) : Agent
+}
+
+class PriorityRoutingHandler {
+    --
+    + handle(issue) : Agent
+}
+
+class CustomerTierRoutingHandler {
+    --
+    + handle(issue) : Agent
+}
+
+class LoadBalancingHandler {
+    --
+    + handle(issue) : Agent
+}
+
+class RoutingEngine {
+    - handlerChain : RoutingHandler
+    --
+    + route(issue) : Agent
+    + buildChain() : void
+}
+
+note bottom of RoutingHandler #FFE0B2
+    **STEP 5 - Who handles this issue? (KEY STEP)**
+    "Issue raised. Which agent gets it?
+    **Chain of Responsibility Pattern**:"
+
+    "1. **CategoryHandler**: route BILLING to
+       Billing dept, TECHNICAL to Tech dept.
+    2. **PriorityHandler**: CRITICAL goes to
+       senior agents only.
+    3. **CustomerTierHandler**: VIP/Enterprise
+       get dedicated agents.
+    4. **LoadBalancingHandler**: among eligible
+       agents, pick the least loaded."
+
+    "Each handler refines the selection or
+    passes to next. Add SkillBasedHandler?
+    Insert in chain. Nothing else changes."
+    **Pattern: Chain of Responsibility | OCP, SRP**
+end note
+
+RoutingHandler <|-- CategoryRoutingHandler
+RoutingHandler <|-- PriorityRoutingHandler
+RoutingHandler <|-- CustomerTierRoutingHandler
+RoutingHandler <|-- LoadBalancingHandler
+RoutingHandler o--> RoutingHandler : next >
+RoutingEngine --> RoutingHandler : uses chain >
+IssueResolutionService --> RoutingEngine
+
+
+' ====================================================================
+'  STEP 6: SLA MANAGEMENT — Strategy Pattern
+' ====================================================================
+class SLAManager {
+    - slaPolicy : SLAPolicy
+    --
+    + calculateDeadline(issue) : LocalDateTime
+    + isSLABreached(issue) : boolean
+    + getTimeRemaining(issue) : long
+    + checkAllSLAs() : List<Issue>
+}
+
+interface SLAPolicy <<Strategy>> {
+    + getResponseTimeHours(priority, tier) : int
+    + getResolutionTimeHours(priority, tier) : int
+}
+
+class StandardSLAPolicy {
+    --
+    + getResponseTimeHours(priority, tier) : int
+    + getResolutionTimeHours(priority, tier) : int
+}
+
+class PremiumSLAPolicy {
+    --
+    + getResponseTimeHours(priority, tier) : int
+    + getResolutionTimeHours(priority, tier) : int
+}
+
+class EnterpriseSLAPolicy {
+    --
+    + getResponseTimeHours(priority, tier) : int
+    + getResolutionTimeHours(priority, tier) : int
+}
+
+note bottom of SLAPolicy #D1C4E9
+    **STEP 6 - SLA enforcement.**
+    "Each issue has an SLA deadline based
+    on priority + customer tier.
+    **Strategy Pattern** — SLA rules are pluggable."
+
+    "**Standard**: CRITICAL=4hr, HIGH=24hr.
+    **Premium**: CRITICAL=1hr, HIGH=4hr.
+    **Enterprise**: CRITICAL=30min, custom terms."
+
+    "SLAManager.checkAllSLAs() finds breached
+    issues and triggers auto-escalation."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+SLAPolicy <|.. StandardSLAPolicy
+SLAPolicy <|.. PremiumSLAPolicy
+SLAPolicy <|.. EnterpriseSLAPolicy
+SLAManager --> SLAPolicy : delegates >
+IssueResolutionService --> SLAManager
+
+
+' ====================================================================
+'  STEP 7: ESCALATION — Strategy Pattern
+' ====================================================================
+class EscalationService {
+    - escalationStrategy : EscalationStrategy
+    - slaManager : SLAManager
+    --
+    + escalate(issue) : void
+    + autoEscalateBreachedSLAs() : void
+}
+
+interface EscalationStrategy <<Strategy>> {
+    + getNextLevel(issue) : EscalationTarget
+}
+
+class HierarchicalEscalation {
+    --
+    + getNextLevel(issue) : EscalationTarget
+}
+
+class DepartmentHeadEscalation {
+    --
+    + getNextLevel(issue) : EscalationTarget
+}
+
+class ExternalEscalation {
+    --
+    + getNextLevel(issue) : EscalationTarget
+}
+
+class EscalationTarget {
+    - agent : Agent
+    - level : int
+    - reason : String
+}
+
+note bottom of EscalationStrategy #FFCDD2
+    **STEP 7 - Issue not resolved in time.**
+    "SLA breached or customer unhappy.
+    **Strategy Pattern** — escalation path
+    is pluggable."
+
+    "**Hierarchical**: agent -> team lead -> manager.
+    **DepartmentHead**: skip to dept head directly.
+    **External**: route to external vendor/partner."
+
+    "EscalationService.autoEscalateBreachedSLAs()
+    runs periodically, finds overdue issues,
+    escalates automatically."
+    **Pattern: Strategy | OCP, SRP**
+end note
+
+EscalationStrategy <|.. HierarchicalEscalation
+EscalationStrategy <|.. DepartmentHeadEscalation
+EscalationStrategy <|.. ExternalEscalation
+EscalationStrategy --> EscalationTarget
+EscalationService --> EscalationStrategy : delegates >
+EscalationService --> SLAManager : checks >
+IssueResolutionService --> EscalationService
+
+
+' ====================================================================
+'  STEP 8: OBSERVER — Notifications + Tracking
+' ====================================================================
+interface IssueObserver <<Observer>> {
+    + onIssueEvent(issue, event) : void
+}
+
+class CustomerNotifyObserver {
+    + onIssueEvent(issue, event) : void
+}
+
+class AgentNotifyObserver {
+    + onIssueEvent(issue, event) : void
+}
+
+class SLAWatchdogObserver {
+    - slaManager : SLAManager
+    --
+    + onIssueEvent(issue, event) : void
+}
+
+class DashboardObserver {
+    + onIssueEvent(issue, event) : void
+}
+
+class AuditTrailObserver {
+    + onIssueEvent(issue, event) : void
+}
+
+note bottom of IssueObserver #B2EBF2
+    **STEP 8 - Everyone stays informed.**
+    "On every state change, Issue calls
+    notifyObservers(). **Observer Pattern**:"
+
+    "**CustomerObserver**: 'Your issue is assigned.'
+    **AgentObserver**: 'New issue assigned to you.'
+    **SLAWatchdog**: starts/checks SLA timer.
+    **DashboardObserver**: updates live metrics
+    (open issues, avg resolution time).
+    **AuditTrailObserver**: logs for compliance."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+IssueObserver <|.. CustomerNotifyObserver
+IssueObserver <|.. AgentNotifyObserver
+IssueObserver <|.. SLAWatchdogObserver
+IssueObserver <|.. DashboardObserver
+IssueObserver <|.. AuditTrailObserver
+Issue --> IssueObserver : notifies >
+SLAWatchdogObserver --> SLAManager : checks >
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(recipient, message) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class EmailNotification {
+    + send(recipient, message) : void
+}
+
+class SMSNotification {
+    + send(recipient, message) : void
+}
+
+class InAppNotification {
+    + send(recipient, message) : void
+}
+
+NotificationStrategy <|.. EmailNotification
+NotificationStrategy <|.. SMSNotification
+NotificationStrategy <|.. InAppNotification
+NotificationService --> NotificationStrategy
+CustomerNotifyObserver --> NotificationService : uses >
+AgentNotifyObserver --> NotificationService : uses >
+IssueResolutionService --> NotificationService
+
+
+' ====================================================================
+'  STEP 9: CUSTOMER SATISFACTION
+' ====================================================================
+class FeedbackService {
+    - feedbacks : Map<String, Feedback>
+    --
+    + submitFeedback(issueId, score, comment) : Feedback
+    + getAgentRating(agentId) : double
+    + getCSATScore(from, to) : double
+}
+
+class Feedback {
+    - feedbackId : String
+    - issueId : String
+    - customerId : String
+    - score : int
+    - comment : String
+    - submittedAt : LocalDateTime
+}
+
+note bottom of FeedbackService #C8E6C9
+    **STEP 9 - Close the loop.**
+    "After resolution, customer rates 1-5
+    and optionally comments. FeedbackService
+    computes CSAT score and individual
+    agent ratings. Low score can trigger
+    auto-reopen. Feeds into agent performance."
+end note
+
+FeedbackService --> Feedback : manages >
+Feedback --> Issue
+Feedback --> Customer
+IssueResolutionService --> FeedbackService
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Customer raises billing issue -> auto-categorized ->
+    **Chain of Responsibility** routes: category -> priority -> tier ->
+    load balance -> agent assigned. Issue moves through states (**State
+    Pattern**): Open -> Assigned -> InProgress -> Resolved -> Closed.
+    SLA tracked per customer tier (**SLA Strategy**). SLA breached?
+    Auto-escalated (**Escalation Strategy**). Customer, agent, dashboard,
+    audit all notified (**Observer**). Customer rates resolution.
+    6 patterns: **Facade, Chain of Responsibility, State, Strategy (x3), Observer**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Customer calls IssueResolutionService.raiseIssue() | Facade | SRP, DIP |
+    | 2 | Customer (with tier), Agent (with skills/dept/load), AgentPool | -- | SRP |
+    | 3 | Issue: category, priority, SLA deadline, comments, resolution | -- | SRP |
+    | 4 | Open -> Assigned -> InProgress -> Resolved -> Closed (+ Escalated, Reopened) | State | SRP, OCP |
+    | 5 | Route: category -> priority -> tier -> least loaded agent | Chain of Responsibility | OCP, SRP |
+    | 6 | SLA deadline by priority + tier (Standard/Premium/Enterprise) | Strategy | OCP, DIP |
+    | 7 | Escalate: hierarchical / dept head / external | Strategy | OCP, SRP |
+    | 8 | Customer, agent, SLA watchdog, dashboard, audit notified | Observer + Strategy | OCP, SRP |
+    | 9 | Customer rates resolution, CSAT score computed | -- | SRP |
+    |  |  |  |  |
+    | **Route + Assign** = Steps 2,5 | **Lifecycle** = Step 4 | **SLA + Escalate** = Steps 6-7 | **Notify + Rate** = Steps 8-9 |
+endlegend
+
+@enduml

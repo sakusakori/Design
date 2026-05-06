@@ -1,0 +1,309 @@
+@startuml HashMap_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 40
+skinparam ranksep 35
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>HashMap (Open Addressing with Linear Probing) - Annotated for Interview</size>\n<size:11>Trace: "Insert key=42, value='hello'. Hash to index 2. Slot 2 occupied? Probe index 3. Empty. Store. Get key=42: hash to 2, probe to 3, found."</size>
+
+
+' ====================================================================
+'  STEP 1: OpenAddressingHashMap — The Main Class
+' ====================================================================
+class "OpenAddressingHashMap<K, V>" as HashMap <<Template>> {
+    - table : vector<Entry>
+    - capacity : int
+    - size : int
+    --
+    + OpenAddressingHashMap(cap = 8)
+    + insert(key : const K&, value : const V&) : void
+    + get(key : const K&) : optional<V>
+    + remove(key : const K&) : void
+    - hash(key : const K&) : int
+    - resize() : void
+}
+
+note top of HashMap #BBDEFB
+    **STEP 1 - Start here.**
+    "A generic HashMap using **Open Addressing**
+    with **Linear Probing** for collision resolution."
+
+    "Template<K, V> — works with any key/value types.
+    Internally: a flat vector<Entry> (no linked lists).
+    Three core operations: insert, get, remove."
+
+    "Default capacity = 8. Doubles when 50% full."
+end note
+
+
+' ====================================================================
+'  STEP 2: Entry — The Storage Unit
+' ====================================================================
+class "Entry (nested struct)" as Entry {
+    + key : K
+    + value : V
+    + isOccupied : bool = false
+    + isDeleted : bool = false
+    --
+    + Entry()
+}
+
+note top of Entry #C8E6C9
+    **STEP 2 - What's stored in each slot?**
+    "Each slot in the table is an **Entry**:
+    - key and value (the actual data)
+    - **isOccupied**: true if slot holds data
+    - **isDeleted**: true if entry was soft-deleted"
+
+    "Two flags because we need to distinguish:
+    (1) Empty slot (never used) — stop probing
+    (2) Deleted slot (tombstone) — skip, keep probing
+    (3) Occupied slot — check key match"
+    **Pattern: Tombstone / Lazy Deletion**
+end note
+
+HashMap *-- Entry : vector<Entry> table >
+
+
+' ====================================================================
+'  STEP 3: HASH FUNCTION
+' ====================================================================
+note as HASH #FFE0B2
+    **STEP 3 - Hash function.**
+    "hash(key) = std::hash<K>{}(key) % capacity"
+
+    "Maps any key to an index in [0, capacity-1].
+    Uses the standard library hash function
+    (works for int, string, etc.)."
+
+    "Example: capacity=8
+    hash(42) = hash_of_42 % 8 = 2
+    hash('hello') = hash_of_hello % 8 = 5"
+
+    "Collisions happen when two keys hash
+    to the same index. That's where linear
+    probing comes in (Step 4)."
+end note
+
+
+' ====================================================================
+'  STEP 4: INSERT — Linear Probing (KEY STEP)
+' ====================================================================
+note as INSERT #FFCDD2
+    **STEP 4 - insert(key, value). (KEY STEP)**
+    "1. Check load factor: if size >= capacity/2
+       -> resize() (double capacity, rehash all)"
+
+    "2. Compute: idx = hash(key)"
+
+    "3. **Linear Probing Loop:**
+       while (table[idx].isOccupied &&
+              !table[idx].isDeleted):"
+
+    "     if table[idx].key == key:
+           -> UPDATE existing value. Return.
+         else:
+           -> idx = (idx + 1) % capacity  // probe next"
+
+    "4. When empty/deleted slot found:
+       table[idx] = {key, value, occupied=true, deleted=false}
+       size++"
+
+    "**Example:**
+    capacity=8, insert(42, 'hello')
+    hash(42) = 2. Slot 2 occupied? Probe 3.
+    Slot 3 empty. Store at index 3."
+end note
+
+
+' ====================================================================
+'  STEP 5: GET — Search with Probing
+' ====================================================================
+note as GET #C8E6C9
+    **STEP 5 - get(key) -> optional<V>.**
+    "1. Compute: idx = hash(key)"
+
+    "2. **Linear Probing Loop:**
+       while (table[idx].isOccupied ||
+              table[idx].isDeleted):"
+
+    "     if table[idx].isOccupied &&
+            !table[idx].isDeleted &&
+            table[idx].key == key:
+           -> return table[idx].value  // FOUND!"
+
+    "     idx = (idx + 1) % capacity  // probe next"
+
+    "3. Hit empty slot (never used)?
+       -> return nullopt  // key doesn't exist"
+
+    "**Why optional<V>?**
+    Cleanly handles 'key not found' without
+    exceptions or null pointers. Caller checks
+    result.has_value()."
+    **Pattern: Optional (safe absence handling)**
+end note
+
+
+' ====================================================================
+'  STEP 6: REMOVE — Tombstone / Lazy Deletion (KEY)
+' ====================================================================
+note as REMOVE #FFCDD2
+    **STEP 6 - remove(key). (KEY STEP)**
+    "1. Compute: idx = hash(key)"
+
+    "2. Linear probe to find the key
+       (same loop as get)"
+
+    "3. When found:
+       table[idx].isDeleted = true  // SOFT DELETE
+       table[idx].isOccupied = false
+       size--"
+
+    "**Why soft delete (tombstone)?**
+    If we truly empty the slot, linear probing
+    BREAKS. Consider:"
+
+    "  Slots: [_, A, B, C, _]
+    A, B, C all hash to index 1.
+    A at 1, B probed to 2, C probed to 3."
+
+    "  If we DELETE B (physically empty slot 2):
+    Slots: [_, A, _, C, _]
+    Now get(C): hash=1, probe 2 — EMPTY.
+    Stops searching. C is 'lost'!"
+
+    "  With TOMBSTONE (mark B as deleted):
+    Slots: [_, A, B(del), C, _]
+    get(C): hash=1, probe 2 — deleted, SKIP.
+    Probe 3 — found C!"
+    **Pattern: Tombstone / Lazy Deletion**
+end note
+
+
+' ====================================================================
+'  STEP 7: RESIZE — Dynamic Growth
+' ====================================================================
+note as RESIZE #D1C4E9
+    **STEP 7 - resize().**
+    "Triggered when load factor >= 50%
+    (size >= capacity / 2)."
+
+    "1. newCapacity = capacity * 2
+    2. Create newTable(newCapacity)
+    3. For each entry in old table:
+       if isOccupied && !isDeleted:
+         rehash into newTable using
+         new capacity (hash changes!)
+    4. table = std::move(newTable)
+       capacity = newCapacity"
+
+    "**Why 50% load factor?**
+    Open addressing performance degrades
+    rapidly above 50-70% load. At 50%,
+    average probes for a lookup is ~1.5.
+    At 90%, it's ~5.5."
+
+    "**Rehashing is necessary** because
+    hash(key) = hash_value % capacity.
+    When capacity doubles, indexes change."
+end note
+
+
+' ====================================================================
+'  VISUAL: TABLE STATE EXAMPLE
+' ====================================================================
+note as TABLE #FFFDE7
+    **Visual: Table state after operations.**
+
+    "OpenAddressingHashMap<int, string> map(8)"
+
+    "insert(42, 'hello')  -> hash=2 -> slot 2"
+    "insert(10, 'world')  -> hash=2 -> probe -> slot 3"
+    "insert(7,  'foo')    -> hash=7 -> slot 7"
+
+    "Table after inserts:
+    [0: _] [1: _] [2: 42='hello'] [3: 10='world']
+    [4: _] [5: _] [6: _] [7: 7='foo']"
+
+    "remove(42)  -> soft delete slot 2"
+
+    "Table after remove:
+    [0: _] [1: _] [2: TOMBSTONE] [3: 10='world']
+    [4: _] [5: _] [6: _] [7: 7='foo']"
+
+    "get(10) -> hash=2 -> slot 2 is tombstone,
+    SKIP -> probe slot 3 -> key=10 FOUND!"
+end note
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:**
+    "Open Addressing HashMap with Linear Probing.
+    Flat vector<Entry> — no linked lists, no pointers.
+    **3 key design decisions:**"
+
+    "1. **Linear Probing**: collision? try next slot.
+       idx = (idx + 1) % capacity. Simple + cache-friendly."
+
+    "2. **Tombstone Deletion**: soft delete preserves
+       probe chains. Without it, lookups break."
+
+    "3. **50% Load Factor Resize**: doubles capacity,
+       rehashes everything. Keeps probing fast."
+
+    "**Time Complexity (amortized):**
+    insert: O(1), get: O(1), remove: O(1)
+    Worst case (all collisions): O(n)"
+
+    "**Space:** O(capacity) — at most 2x actual entries
+    due to 50% load factor."
+end note
+
+
+' ====================================================================
+'  LAYOUT
+' ====================================================================
+HashMap -[hidden]down-> HASH
+HASH -[hidden]down-> INSERT
+INSERT -[hidden]down-> GET
+GET -[hidden]down-> REMOVE
+REMOVE -[hidden]down-> RESIZE
+RESIZE -[hidden]down-> TABLE
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern / Concept |= Key Point |
+    | 1 | OpenAddressingHashMap<K,V> — flat vector, no chains | Open Addressing | Cache-friendly, no pointers |
+    | 2 | Entry: key, value, isOccupied, isDeleted | Tombstone flags | 3 states: empty / occupied / deleted |
+    | 3 | hash(key) = std::hash<K>{}(key) % capacity | Hash Function | Maps key to index [0, capacity-1] |
+    | 4 | insert: hash -> probe linearly until empty slot | Linear Probing | idx = (idx+1) % capacity |
+    | 5 | get: hash -> probe, skip tombstones, return optional | Optional Pattern | nullopt if not found |
+    | 6 | remove: soft delete (isDeleted=true), don't clear | Tombstone Deletion | Preserves probe chains |
+    | 7 | resize at 50% load, double capacity, rehash all | Dynamic Resizing | Keeps avg probes ~1.5 |
+    |  |  |  |  |
+    | **O(1) amortized** insert/get/remove. | **50% load = resize.** | **Tombstones = correctness.** | **Linear probe = cache-friendly.** |
+endlegend
+
+@enduml

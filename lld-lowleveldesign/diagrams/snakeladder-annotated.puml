@@ -1,0 +1,302 @@
+@startuml SnakeNLadder_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Snake and Ladder Game (Annotated for Interview)</size>\n<size:11>Trace: "Player-1 rolls dice, gets 4, moves to cell 4. Cell has a ladder (4->25). Player jumps to 25. Player-2's turn. First to reach 100 wins."</size>
+
+
+' ====================================================================
+'  STEP 1: GAME — Orchestrator
+' ====================================================================
+class Game {
+    - board : Board*
+    - dice : Dice*
+    - playersList : deque<Player*>
+    - winner : Player*
+    - player1 : Player
+    - player2 : Player
+    --
+    + Game()
+    + ~Game()
+    + startGame() : void
+    - initializeGame() : void
+    - addPlayers() : void
+    - findPlayerTurn() : Player*
+    - jumpCheck(playerNewPosition) : int
+}
+
+note top of Game #BBDEFB
+    **STEP 1 - Start here.**
+    "Game is the **orchestrator**. It owns the
+    Board, Dice, and Players. Constructor calls
+    initializeGame() which sets up a 10x10 board
+    with 5 snakes and 4 ladders, creates 1 dice,
+    adds 2 players."
+
+    "**startGame()** runs the main loop:
+    1. Get current player (round-robin via deque)
+    2. Roll dice
+    3. Calculate new position
+    4. Check for snake/ladder (jumpCheck)
+    5. Update position
+    6. Check if winner (position >= 99)
+    7. Repeat until someone wins"
+end note
+
+
+' ====================================================================
+'  STEP 2: BOARD + CELL + JUMP — The Game Grid
+' ====================================================================
+class Board {
+    - cells : vector<vector<Cell>>
+    --
+    + Board(boardSize, numberOfSnakes, numberOfLadders)
+    + getCell(playerPosition) : Cell&
+    - initializeCells(boardSize) : void
+    - addSnakesLadders(numberOfSnakes, numberOfLadders) : void
+}
+
+class Cell {
+    + jump : Jump*
+    --
+    + Cell()
+}
+
+class Jump {
+    + start : int
+    + end : int
+    --
+    + Jump()
+}
+
+note top of Board #FFE0B2
+    **STEP 2 - The board. (KEY STEP)**
+    "**Board** is a 2D grid of Cells (10x10 = 100 cells).
+    Constructor initializes grid, then randomly places
+    snakes and ladders."
+
+    "**Cell** is a single square. Most cells have
+    jump = nullptr (normal). Some have a **Jump**."
+
+    "**Jump** is a unified model for both snakes
+    and ladders:
+    - **Ladder**: start=4, end=25 (start < end, go UP)
+    - **Snake**: start=87, end=24 (start > end, go DOWN)"
+
+    "**Key design insight**: Snake and Ladder are
+    NOT separate classes. Both are just a Jump
+    with start and end. The direction (up/down)
+    is determined by comparing start vs end.
+    This avoids unnecessary class hierarchy."
+    **Design: Unified model over inheritance**
+end note
+
+Board *-- Cell : grid of >
+Cell --> Jump : may have >
+Game --> Board : owns >
+
+
+' ====================================================================
+'  STEP 3: BOARD INTERNALS — Position Mapping
+' ====================================================================
+note as BOARDNOTE #C8E6C9
+    **STEP 3 - How positions map to cells.**
+    "Player position is a single integer (0-99).
+    Board is a 2D grid."
+
+    "**getCell(playerPosition):**
+    row = playerPosition / boardSize
+    col = playerPosition % boardSize"
+
+    "Position 0 = Cell[0][0] (bottom-left)
+    Position 9 = Cell[0][9]
+    Position 10 = Cell[1][0]
+    Position 99 = Cell[9][9] (WIN!)"
+
+    "**addSnakesLadders():**
+    Randomly generates start/end positions.
+    If start < end -> it's a ladder.
+    If start > end -> it's a snake.
+    Creates Jump object, attaches to Cell."
+end note
+
+
+' ====================================================================
+'  STEP 4: DICE
+' ====================================================================
+class Dice {
+    - diceCount : int
+    - minVal : int = 1
+    - maxVal : int = 6
+    --
+    + Dice(diceCount)
+    + rollDice() : int
+}
+
+note top of Dice #C8E6C9
+    **STEP 4 - Roll the dice.**
+    "**Dice** supports multiple dice.
+    rollDice() sums diceCount random values
+    between minVal(1) and maxVal(6)."
+
+    "With 1 die: range = 1-6.
+    With 2 dice: range = 2-12.
+    Configurable via diceCount parameter."
+end note
+
+Game --> Dice : owns >
+
+
+' ====================================================================
+'  STEP 5: PLAYER + TURN MANAGEMENT
+' ====================================================================
+class Player {
+    + id : string
+    + currentPosition : int
+    --
+    + Player(id, currentPosition)
+}
+
+note top of Player #C8E6C9
+    **STEP 5 - Players and turns.**
+    "**Player** has an id ('Player-1') and
+    currentPosition (starts at 0)."
+
+    "**Turn management uses a deque**
+    (double-ended queue) as a circular queue:
+    findPlayerTurn():
+    1. Pop front player from deque
+    2. Push same player to back of deque
+    3. Return the player"
+
+    "[P1, P2] -> pop P1, push P1 -> [P2, P1]
+    Next turn: pop P2, push P2 -> [P1, P2]"
+
+    "Supports any number of players.
+    Add Player-3? Just push to deque.
+    No code change needed."
+    **Pattern: Circular Queue (Round-Robin)**
+end note
+
+Game *-- Player : has players >
+
+
+' ====================================================================
+'  STEP 6: GAME LOOP — The Core Flow
+' ====================================================================
+note as GAMELOOP #FFCDD2
+    **STEP 6 - The game loop. (KEY STEP)**
+    "startGame() main loop (pseudocode):"
+
+    "while (winner == nullptr) {
+      player = findPlayerTurn()    // round-robin
+      diceValue = dice.rollDice()  // e.g., 4
+      newPos = player.currentPosition + diceValue"
+
+    "  // bounds check
+      if (newPos >= totalCells) continue  // skip turn"
+
+    "  // snake/ladder check
+      newPos = jumpCheck(newPos)"
+
+    "  // update position
+      player.currentPosition = newPos"
+
+    "  // win check
+      if (newPos >= totalCells - 1)
+        winner = player  // GAME OVER!
+    }"
+end note
+
+
+' ====================================================================
+'  STEP 7: JUMP CHECK — Snake or Ladder?
+' ====================================================================
+note as JUMPNOTE #FFE0B2
+    **STEP 7 - jumpCheck() logic.**
+    "jumpCheck(newPosition):"
+
+    "1. If newPosition > board size: return original
+       (can't go past 100)"
+
+    "2. Get cell at newPosition:
+       cell = board.getCell(newPosition)"
+
+    "3. If cell.jump != nullptr AND
+          cell.jump.start == newPosition:"
+
+    "   If jump.start < jump.end:
+       -> It's a **LADDER**! Print 'Ladder!'
+       -> Return jump.end (go UP)"
+
+    "   If jump.start > jump.end:
+       -> It's a **SNAKE**! Print 'Snake!'
+       -> Return jump.end (go DOWN)"
+
+    "4. Else: return newPosition (normal move)"
+end note
+
+
+' ====================================================================
+'  CONNECTIONS
+' ====================================================================
+Game -[hidden]down-> BOARDNOTE
+Game -[hidden]down-> GAMELOOP
+GAMELOOP -[hidden]down-> JUMPNOTE
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Player-1 rolls 4, moves to cell 4. Cell has
+    Jump(start=4, end=25) — it's a ladder! Player jumps to 25.
+    Player-2's turn. Rolls 6, moves to cell 6. No jump. Player-1
+    again. Rolls 3, at 28. Cell has Jump(start=28, end=8) — snake!
+    Falls to 8. First player to reach cell 99 wins."
+
+    "**Key design decisions**:
+    1. **Jump unifies Snake + Ladder** — no separate classes.
+       start < end = ladder, start > end = snake.
+    2. **Circular queue** (deque) for turn management —
+       supports N players with no code change.
+    3. **Board owns cell grid**, cells optionally point to Jumps.
+    4. **Dice is configurable** — supports multiple dice.
+    All composition, no inheritance. Clean and simple."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Key Design Point |
+    | 1 | Game orchestrates: board, dice, players, game loop | Orchestrator / Coordinator |
+    | 2 | Board is 10x10 grid of Cells. Cell may have a Jump | Jump unifies Snake + Ladder |
+    | 3 | Position (0-99) maps to Cell[row][col] | row = pos/size, col = pos%size |
+    | 4 | Dice rolls 1-6 (configurable count) | Supports multiple dice |
+    | 5 | Players rotate via deque (circular queue) | Round-robin, N-player support |
+    | 6 | Loop: roll -> move -> jumpCheck -> update -> win check | Main game loop |
+    | 7 | jumpCheck: start < end = ladder, start > end = snake | Unified jump model |
+    |  |  |  |
+    | **Core insight**: Snake and Ladder are the SAME class (Jump). No inheritance needed. | Direction determined by start vs end comparison. |  |
+endlegend
+
+@enduml

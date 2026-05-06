@@ -1,0 +1,474 @@
+@startuml MeetingRoomBooking_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Teams Meeting Room Booking - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "User searches for a 10-person room with projector, books 2pm-3pm, invites team, everyone gets notified."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — BookingService
+' ====================================================================
+class BookingService <<Facade>> {
+    - rooms : Map<String, Room>
+    - bookings : Map<String, Booking>
+    - roomSearchStrategy : RoomSearchStrategy
+    - notificationService : NotificationService
+    - calendarManager : CalendarManager
+    --
+    + searchAvailableRooms(criteria) : List<Room>
+    + createBooking(request) : Booking
+    + cancelBooking(bookingId) : void
+    + modifyBooking(bookingId, newSlot) : Booking
+    + getBookingsForUser(userId) : List<Booking>
+    + getBookingsForRoom(roomId, date) : List<Booking>
+    + setRoomSearchStrategy(strategy) : void
+}
+
+note top of BookingService #BBDEFB
+    **STEP 1 - Start here.**
+    "User opens Teams and wants to book a room.
+    Client calls BookingService — the **Facade**.
+    It coordinates room search, calendar checks,
+    booking creation, and notifications.
+    One entry point for everything."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: USER + ROOM MODELS
+' ====================================================================
+class User {
+    - userId : String
+    - name : String
+    - email : String
+    - department : String
+    --
+    + getEmail() : String
+    + getDepartment() : String
+}
+
+class Room {
+    - roomId : String
+    - name : String
+    - floor : int
+    - capacity : int
+    - equipment : Set<Equipment>
+    - location : String
+    - isActive : boolean
+    --
+    + hasEquipment(equip) : boolean
+    + getCapacity() : int
+    + getFloor() : int
+}
+
+enum Equipment {
+    PROJECTOR
+    WHITEBOARD
+    VIDEO_CONFERENCE
+    PHONE
+    LARGE_SCREEN
+    SPEAKER
+}
+
+note top of Room #C8E6C9
+    **STEP 2 - Core models.**
+    "**User** = who books (name, email, dept).
+    **Room** = what gets booked (capacity,
+    floor, equipment like PROJECTOR,
+    VIDEO_CONFERENCE, WHITEBOARD).
+    **Equipment** enum lists room features."
+end note
+
+Room --> Equipment : has >
+
+
+' ====================================================================
+'  STEP 3: TIME SLOT + CALENDAR (Conflict Detection)
+' ====================================================================
+class TimeSlot {
+    - startTime : LocalDateTime
+    - endTime : LocalDateTime
+    --
+    + getDurationMinutes() : int
+    + overlapsWith(other) : boolean
+    + contains(time) : boolean
+}
+
+class CalendarManager {
+    - roomBookings : Map<String, List<Booking>>
+    --
+    + isRoomAvailable(roomId, slot) : boolean
+    + getBookingsForRoom(roomId, date) : List<Booking>
+    + addBooking(booking) : void
+    + removeBooking(booking) : void
+    + findConflicts(roomId, slot) : List<Booking>
+}
+
+note top of CalendarManager #C8E6C9
+    **STEP 3 - Prevent double booking.**
+    "**TimeSlot** has start/end and an
+    overlapsWith() method for conflict checks.
+    **CalendarManager** maintains all bookings
+    per room. Before creating a booking,
+    it checks isRoomAvailable(room, slot).
+    If conflict found, booking is rejected."
+end note
+
+CalendarManager --> TimeSlot : checks >
+BookingService --> CalendarManager : validates via >
+
+
+' ====================================================================
+'  STEP 4: ROOM SEARCH — Strategy Pattern
+' ====================================================================
+class SearchCriteria {
+    - minCapacity : int
+    - preferredFloor : int
+    - requiredEquipment : Set<Equipment>
+    - timeSlot : TimeSlot
+    - preferredBuilding : String
+    --
+    + getMinCapacity() : int
+    + getRequiredEquipment() : Set<Equipment>
+}
+
+interface RoomSearchStrategy <<Strategy>> {
+    + search(rooms, criteria, calendar) : List<Room>
+}
+
+class CapacityFirstStrategy {
+    --
+    + search(rooms, criteria, calendar) : List<Room>
+}
+
+class FloorPreferenceStrategy {
+    --
+    + search(rooms, criteria, calendar) : List<Room>
+}
+
+class BestFitStrategy {
+    --
+    + search(rooms, criteria, calendar) : List<Room>
+}
+
+note bottom of RoomSearchStrategy #FFE0B2
+    **STEP 4 - How do we find the right room?**
+    "User needs 10 seats + projector at 2pm.
+    Multiple rooms might qualify. How to rank?"
+
+    "**Strategy Pattern** — search logic is pluggable.
+    **CapacityFirst**: smallest room that fits.
+    **FloorPreference**: closest to user's floor.
+    **BestFit**: scores by capacity+floor+equipment.
+    Add CostBased strategy? One new class."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+RoomSearchStrategy <|.. CapacityFirstStrategy
+RoomSearchStrategy <|.. FloorPreferenceStrategy
+RoomSearchStrategy <|.. BestFitStrategy
+BookingService --> RoomSearchStrategy : delegates search >
+SearchCriteria --> Equipment : requires >
+SearchCriteria --> TimeSlot : for slot >
+
+
+' ====================================================================
+'  STEP 5: BOOKING + BUILDER
+' ====================================================================
+class Booking {
+    - bookingId : String
+    - room : Room
+    - timeSlot : TimeSlot
+    - organizer : User
+    - participants : List<User>
+    - currentState : BookingState
+    - status : BookingStatus
+    - subject : String
+    - recurrence : RecurrencePattern
+    - createdAt : LocalDateTime
+    - observers : List<BookingObserver>
+    --
+    + confirm() : void
+    + cancel(reason) : void
+    + start() : void
+    + complete() : void
+    + addParticipant(user) : void
+    + removeParticipant(user) : void
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+}
+
+enum BookingStatus {
+    CONFIRMED
+    IN_PROGRESS
+    COMPLETED
+    CANCELLED
+}
+
+class RecurrencePattern {
+    - type : RecurrenceType
+    - interval : int
+    - endDate : LocalDate
+    - daysOfWeek : Set<DayOfWeek>
+    --
+    + getNextOccurrence(from) : LocalDate
+    + isRecurring() : boolean
+}
+
+enum RecurrenceType {
+    NONE
+    DAILY
+    WEEKLY
+    BIWEEKLY
+    MONTHLY
+}
+
+note top of Booking #FFCDD2
+    **STEP 5 - Booking created.**
+    "Booking is the **central domain object**.
+    Has room, time slot, organizer, participants,
+    and optional recurrence (daily/weekly/monthly).
+    It participates in:
+    - **State Pattern** (booking lifecycle)
+    - **Observer Pattern** (notifications)"
+end note
+
+Booking --> Room : for room >
+Booking --> TimeSlot : at time >
+Booking --> User : organized by >
+Booking --> BookingStatus : tracks >
+Booking --> RecurrencePattern : repeats >
+RecurrencePattern --> RecurrenceType
+
+
+class BookingBuilder <<Builder>> {
+    - room : Room
+    - timeSlot : TimeSlot
+    - organizer : User
+    - participants : List<User>
+    - subject : String
+    - recurrence : RecurrencePattern
+    --
+    + room(room) : BookingBuilder
+    + timeSlot(start, end) : BookingBuilder
+    + organizer(user) : BookingBuilder
+    + addParticipant(user) : BookingBuilder
+    + subject(title) : BookingBuilder
+    + recurring(type, interval) : BookingBuilder
+    + build() : Booking
+}
+
+note bottom of BookingBuilder #D1C4E9
+    **Builder for clean creation.**
+    "Booking has 7+ fields. **Builder Pattern**
+    gives a fluent API:
+    new BookingBuilder()
+      .room(room).timeSlot(2pm, 3pm)
+      .organizer(alice).addParticipant(bob)
+      .subject('Sprint Planning')
+      .recurring(WEEKLY, 1)
+      .build()"
+    **Pattern: Builder | SRP**
+end note
+
+BookingBuilder --> Booking : builds >
+
+
+' ====================================================================
+'  STEP 6: STATE PATTERN — Booking Lifecycle
+' ====================================================================
+interface BookingState <<State>> {
+    + confirm(booking) : void
+    + cancel(booking, reason) : void
+    + start(booking) : void
+    + complete(booking) : void
+}
+
+class ConfirmedState {
+    + cancel(booking, reason) : void
+    + start(booking) : void
+    + confirm(booking) : void
+    + complete(booking) : void
+}
+
+class InProgressState {
+    + complete(booking) : void
+    + cancel(booking, reason) : void
+    + confirm(booking) : void
+    + start(booking) : void
+}
+
+class CompletedState {
+    + confirm(booking) : void
+    + cancel(booking, reason) : void
+    + start(booking) : void
+    + complete(booking) : void
+}
+
+class CancelledState {
+    + confirm(booking) : void
+    + cancel(booking, reason) : void
+    + start(booking) : void
+    + complete(booking) : void
+}
+
+note bottom of BookingState #FFCDD2
+    **STEP 6 - Booking lifecycle.**
+    "**State Pattern** — each state is a class.
+    **ConfirmedState**: can start or cancel.
+    **InProgressState**: meeting ongoing, can complete.
+    **CompletedState**: terminal, room freed.
+    **CancelledState**: terminal, room freed."
+
+    Confirmed -> InProgress (meeting starts)
+    Confirmed -> Cancelled (user cancels)
+    InProgress -> Completed (meeting ends)
+    **Pattern: State | SRP, OCP**
+end note
+
+BookingState <|.. ConfirmedState
+BookingState <|.. InProgressState
+BookingState <|.. CompletedState
+BookingState <|.. CancelledState
+Booking --> BookingState : delegates lifecycle >
+
+
+' ====================================================================
+'  STEP 7: OBSERVER + NOTIFICATION — Observer + Strategy
+' ====================================================================
+interface BookingObserver <<Observer>> {
+    + onBookingUpdate(booking, eventType) : void
+}
+
+enum BookingEventType {
+    CREATED
+    CANCELLED
+    MODIFIED
+    STARTING_SOON
+    COMPLETED
+}
+
+class ParticipantObserver {
+    - user : User
+    - notificationService : NotificationService
+    --
+    + onBookingUpdate(booking, eventType) : void
+}
+
+class RoomDisplayObserver {
+    - displayId : String
+    --
+    + onBookingUpdate(booking, eventType) : void
+}
+
+class AuditLogObserver {
+    --
+    + onBookingUpdate(booking, eventType) : void
+}
+
+BookingObserver <|.. ParticipantObserver
+BookingObserver <|.. RoomDisplayObserver
+BookingObserver <|.. AuditLogObserver
+Booking --> BookingObserver : notifies >
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(user, message) : void
+    + notifyAll(users, message) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(user, message) : void
+}
+
+class EmailNotification {
+    + send(user, message) : void
+}
+
+class TeamsNotification {
+    + send(user, message) : void
+}
+
+class PushNotification {
+    + send(user, message) : void
+}
+
+note bottom of BookingObserver #B2EBF2
+    **STEP 7 - Everyone gets notified.**
+    "On booking create/cancel/modify, Booking
+    calls notifyObservers(). **Observer Pattern**:"
+
+    "**ParticipantObserver**: notifies each user.
+    **RoomDisplayObserver**: updates room screen.
+    **AuditLogObserver**: logs for compliance."
+
+    "ParticipantObserver uses NotificationService
+    which has **Strategy Pattern** for channels:
+    Email, Teams Chat, Push notification."
+    **Patterns: Observer + Strategy | OCP, SRP**
+end note
+
+NotificationStrategy <|.. EmailNotification
+NotificationStrategy <|.. TeamsNotification
+NotificationStrategy <|.. PushNotification
+NotificationService --> NotificationStrategy : delegates >
+ParticipantObserver --> NotificationService : uses >
+BookingService --> NotificationService : uses >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "We traced: user searches rooms (**Search Strategy**
+    ranks available rooms) -> builds booking via **Builder** -> calendar
+    validates no conflict -> booking confirmed (**State Pattern**) ->
+    participants notified (**Observer** + **Notification Strategy**) ->
+    meeting starts/ends, state transitions automatically.
+    5 patterns: **Facade**, **Strategy** (x2), **State**, **Observer**, **Builder**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | User calls BookingService to search/book rooms | Facade | SRP, DIP |
+    | 2 | User, Room, Equipment models | -- | SRP |
+    | 3 | CalendarManager checks TimeSlot conflicts, prevents double-booking | -- | SRP |
+    | 4 | Find best room: smallest fit, preferred floor, best score | Strategy (search) | OCP, DIP |
+    | 5 | Booking created with room, slot, participants, recurrence | Builder | SRP |
+    | 6 | Confirmed -> InProgress -> Completed / Cancelled | State | SRP, OCP |
+    | 7 | Participants, room display, audit log notified; via email/Teams/push | Observer + Strategy | OCP, SRP |
+    |  |  |  |  |
+    | **Search + Book** = Steps 1-5 | **Lifecycle** = Step 6 | **Notify** = Step 7 |  |
+endlegend
+
+@enduml

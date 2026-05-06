@@ -1,0 +1,459 @@
+@startuml CarRental_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Car Rental System (Annotated for Interview)</size>\n<size:11>Trace: "User searches for a 4-wheeler at Store#1, reserves it for 3 days, picks up, returns car, bill generated, pays via UPI."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — VehicleRentalSystem + Store
+' ====================================================================
+class VehicleRentalSystem <<Facade>> {
+    + storeList : vector<Store*>
+    + userList : vector<User*>
+    --
+    + getStore(storeId) : Store*
+    + getUser(index) : User*
+    + addStore(store) : void
+    + addUser(user) : void
+}
+
+class Store <<Facade>> {
+    - storeId : int
+    - storeLocation : Location
+    - inventory : VehicleInventoryManager
+    - reservationManager : ReservationManager
+    - defaultBillingStrategy : DailyBillingStrategy
+    - billManager : BillManager
+    - defaultPaymentStrategy : UPIPaymentStrategy
+    - paymentManager : PaymentManager
+    --
+    + Store(storeId, location)
+    + getVehicles(type, from, to) : vector<Vehicle*>
+    + createReservation(vehicleId, user, from, to, type) : Reservation*
+    + cancelReservation(reservationId) : void
+    + startTrip(reservationId) : void
+    + submitVehicle(reservationId) : void
+    + generateBill(reservationId, strategy) : Bill*
+    + makePayment(bill, strategy, amount) : Payment*
+    + getInventory() : VehicleInventoryManager*
+}
+
+note top of VehicleRentalSystem #BBDEFB
+    **STEP 1 - Start here.**
+    "**VehicleRentalSystem** is the top-level
+    Facade. Manages all stores and users."
+
+    "**Store** is the per-location Facade.
+    It composes everything: inventory,
+    reservations, billing, payments.
+    Client calls: store.getVehicles() ->
+    store.createReservation() -> store.startTrip()
+    -> store.submitVehicle() -> store.generateBill()
+    -> store.makePayment(). One stop for all."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+VehicleRentalSystem o--> Store : has stores >
+
+
+' ====================================================================
+'  STEP 2: USER + LOCATION + VEHICLE
+' ====================================================================
+class User {
+    + userId : int
+    + userName : string
+    + drivingLicenseNo : string
+    --
+    + getUserId() : int
+    + getUserName() : string
+    + getDrivingLicenseNo() : string
+}
+
+class Location {
+    + buildingNo : int
+    + area : string
+    + city : string
+    + state : string
+    + country : string
+    + pincode : int
+}
+
+class Vehicle {
+    - vehicleID : int
+    - vehicleNumber : string
+    - vehicleType : VehicleType
+    - dailyRentalCost : double
+    - vehicleStatus : VehicleStatus
+    --
+    + getVehicleID() : int
+    + getVehicleType() : VehicleType
+    + getVehicleStatus() : VehicleStatus
+    + getDailyRentalCost() : double
+    + setDailyRentalCost(cost) : void
+    + setStatus(status) : void
+}
+
+enum VehicleType {
+    FOUR_WHEELER
+    TWO_WHEELER
+}
+
+enum VehicleStatus {
+    AVAILABLE
+    BOOKED
+    MAINTENANCE
+}
+
+note top of Vehicle #C8E6C9
+    **STEP 2 - Core entities.**
+    "**User** has userId, name, driving license.
+    **Location** has address components.
+    **Vehicle** has id, number, type, daily cost,
+    and status (AVAILABLE/BOOKED/MAINTENANCE)."
+end note
+
+Vehicle --> VehicleType
+Vehicle --> VehicleStatus
+Store --> Location : at location >
+VehicleRentalSystem o--> User : has users >
+
+
+' ====================================================================
+'  STEP 3: VEHICLE INVENTORY — Thread-Safe (KEY)
+' ====================================================================
+class VehicleInventoryManager {
+    - vehicles : map<int, Vehicle*>
+    - vehicleBookingIds : map<int, vector<int>>
+    - vehicleLocks : map<int, mutex*>
+    - reservationRepository : ReservationRepository*
+    --
+    + addVehicle(vehicle) : void
+    + getVehicle(vehicleId) : Vehicle*
+    + setReservationRepository(repo) : void
+    + isAvailable(vehicleId, from, to) : bool
+    + reserve(vehicleId, reservationId, from, to) : bool
+    + release(vehicleId, reservationId) : void
+    + getAvailableVehicles(type, from, to) : vector<Vehicle*>
+    - lockForVehicle(vehicleId) : mutex&
+}
+
+note top of VehicleInventoryManager #FFCDD2
+    **STEP 3 - Inventory management. (KEY STEP)**
+    "Manages all vehicles at a store.
+    **Thread-safe** with per-vehicle mutex locks."
+
+    "**isAvailable(vehicleId, from, to)**:
+    Checks if vehicle has any overlapping
+    reservations using DateInterval.overlaps()."
+
+    "**reserve()**: lock_guard(mutex) ->
+    check availability -> add reservationId
+    to vehicle's booking list -> return true."
+
+    "**release()**: removes reservationId
+    from vehicle's booking list."
+
+    "**getAvailableVehicles(FOUR_WHEELER, from, to)**:
+    iterates all vehicles, filters by type + availability."
+
+    "Per-vehicle mutex prevents two users from
+    booking the same car simultaneously."
+    **Pattern: Repository + Thread-Safe Locking**
+end note
+
+Store --> VehicleInventoryManager : owns >
+VehicleInventoryManager o--> Vehicle : manages >
+
+
+' ====================================================================
+'  STEP 4: RESERVATION LIFECYCLE
+' ====================================================================
+class Reservation {
+    - reservationId : int
+    - vehicleId : int
+    - userId : int
+    - dateBookedFrom : LocalDate
+    - dateBookedTo : LocalDate
+    - reservationType : ReservationType
+    - reservationStatus : ReservationStatus
+    --
+    + getReservationId() : int
+    + getVehicleId() : int
+    + getUserId() : int
+    + getDateBookedFrom() : LocalDate
+    + getDateBookedTo() : LocalDate
+    + getReservationType() : ReservationType
+    + getReservationStatus() : ReservationStatus
+    + setReservationStatus(status) : void
+}
+
+enum ReservationType {
+    HOURLY
+    DAILY
+}
+
+enum ReservationStatus {
+    SCHEDULED
+    IN_USE
+    COMPLETED
+    CANCELLED
+}
+
+class ReservationManager {
+    - inventory : VehicleInventoryManager*
+    - reservationRepository : ReservationRepository
+    - reservationIdCounter : int = 20000
+    --
+    + findByID(reservationId) : Reservation*
+    + createReservation(vehicleId, userId, from, to, type) : Reservation*
+    + cancelReservation(reservationId) : void
+    + startTrip(reservationId) : void
+    + submitVehicle(reservationId) : void
+    + remove(reservationId) : void
+}
+
+class ReservationRepository {
+    - reservations : map<int, Reservation*>
+    --
+    + save(reservation) : void
+    + findById(reservationId) : Reservation*
+    + remove(reservationId) : void
+    + getAll() : map<int, Reservation*>&
+}
+
+class LocalDate {
+    + year : int
+    + month : int
+    + day : int
+    --
+    + isBefore(other) : bool
+    + isAfter(other) : bool
+    + daysBetween(other) : long
+    + toString() : string
+}
+
+class DateInterval {
+    - from : LocalDate
+    - to : LocalDate
+    --
+    + DateInterval(from, to)
+    + getFrom() : LocalDate
+    + getTo() : LocalDate
+    + overlaps(other) : bool
+}
+
+note top of ReservationManager #FFCDD2
+    **STEP 4 - Reservation lifecycle.**
+    "**ReservationManager** orchestrates:
+    createReservation(): validate vehicle ->
+    inventory.reserve() -> create Reservation
+    (status=SCHEDULED) -> save to repository.
+
+    startTrip(): set status = IN_USE.
+    submitVehicle(): set status = COMPLETED,
+    release vehicle in inventory.
+    cancelReservation(): set status = CANCELLED,
+    release vehicle."
+
+    "**DateInterval.overlaps()** prevents
+    double-booking by checking date overlap."
+    **Patterns: Facade + Repository | SRP**
+end note
+
+Reservation --> ReservationType
+Reservation --> ReservationStatus
+Reservation --> LocalDate : from/to >
+ReservationManager --> ReservationRepository : stores in >
+ReservationManager --> VehicleInventoryManager : reserves via >
+ReservationRepository o--> Reservation : manages >
+Store --> ReservationManager : owns >
+DateInterval --> LocalDate : wraps >
+
+
+' ====================================================================
+'  STEP 5: BILLING — Strategy Pattern
+' ====================================================================
+class Bill {
+    - billId : int
+    - reservationId : int
+    - totalBillAmount : double
+    - billPaid : bool
+    --
+    + getBillId() : int
+    + getReservationId() : int
+    + getTotalBillAmount() : double
+    + isBillPaid() : bool
+    + setBillPaid(paid) : void
+}
+
+abstract class BillingStrategy <<Strategy>> {
+    --
+    + {abstract} generateBill(reservation) : Bill*
+}
+
+class DailyBillingStrategy {
+    - vehicleInventoryManager : VehicleInventoryManager*
+    - billIdCounter : int = 5000
+    --
+    + generateBill(reservation) : Bill*
+}
+
+class BillManager {
+    - billingStrategy : BillingStrategy*
+    - bills : map<int, Bill*>
+    --
+    + BillManager(billingStrategy)
+    + generateBill(reservation) : Bill*
+    + getBill(billId) : Bill*
+    + setBillingStrategy(strategy) : void
+}
+
+note top of BillingStrategy #FFE0B2
+    **STEP 5 - Generate the bill.**
+    "Car returned. How much to charge?
+    **Strategy Pattern** — billing is pluggable."
+
+    "**DailyBillingStrategy**: calculates
+    days = dateBookedTo - dateBookedFrom.
+    bill = days * vehicle.dailyRentalCost."
+
+    "Add HourlyBillingStrategy? One new class.
+    setBillingStrategy() swaps at runtime."
+
+    "**BillManager** wraps the strategy and
+    stores all generated bills (Repository)."
+    **Pattern: Strategy + Repository | OCP, DIP**
+end note
+
+BillingStrategy <|-- DailyBillingStrategy
+BillManager --> BillingStrategy : delegates >
+BillManager o--> Bill : stores >
+Store --> BillManager : owns >
+
+
+' ====================================================================
+'  STEP 6: PAYMENT — Strategy Pattern
+' ====================================================================
+class Payment {
+    - paymentId : int
+    - billId : int
+    - amountPaid : double
+    - paymentMode : PaymentMode
+    - paymentDate : time_t
+    --
+    + getPaymentId() : int
+    + getBillId() : int
+    + getAmountPaid() : double
+    + getPaymentMode() : PaymentMode
+}
+
+enum PaymentMode {
+    CASH
+    ONLINE
+    UPI
+}
+
+abstract class PaymentStrategy <<Strategy>> {
+    --
+    + {abstract} processPayment(bill, amount) : Payment*
+}
+
+class UPIPaymentStrategy {
+    - paymentIdCounter : int = 9000
+    --
+    + processPayment(bill, amount) : Payment*
+}
+
+class PaymentManager {
+    - paymentStrategy : PaymentStrategy*
+    - payments : map<int, Payment*>
+    --
+    + PaymentManager(paymentStrategy)
+    + makePayment(bill, amount) : Payment*
+    + getPaymentsForBill(billId) : vector<Payment*>
+    + getPayment(paymentId) : Payment*
+    + setPaymentStrategy(strategy) : void
+}
+
+note top of PaymentStrategy #D1C4E9
+    **STEP 6 - Process payment.**
+    "**Strategy Pattern** — payment method
+    is pluggable. UPIPaymentStrategy creates
+    Payment with mode=UPI."
+
+    "Add CashPaymentStrategy, OnlinePaymentStrategy?
+    One new class each. setPaymentStrategy()
+    swaps at runtime."
+
+    "**PaymentManager** wraps strategy and
+    stores all payments (Repository)."
+    **Pattern: Strategy + Repository | OCP, DIP**
+end note
+
+PaymentStrategy <|-- UPIPaymentStrategy
+PaymentManager --> PaymentStrategy : delegates >
+PaymentManager o--> Payment : stores >
+Payment --> PaymentMode
+Store --> PaymentManager : owns >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "User searches store.getVehicles(FOUR_WHEELER, from, to)
+    -> VehicleInventoryManager filters available cars -> user picks one
+    -> store.createReservation() -> ReservationManager validates + reserves
+    (mutex-protected) -> Reservation(SCHEDULED). User picks up car ->
+    startTrip() -> IN_USE. Returns car -> submitVehicle() -> COMPLETED,
+    vehicle released. store.generateBill() -> **DailyBillingStrategy**
+    calculates days * rate. store.makePayment() -> **UPIPaymentStrategy**
+    processes payment."
+
+    "Key patterns: **Facade** (Store orchestrates everything), **Strategy**
+    (x2: Billing + Payment), **Repository** (Reservation, Bill, Payment,
+    Vehicle), **Thread-safe** (per-vehicle mutex). Clean layered architecture."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | VehicleRentalSystem -> Store (per-location facade) | Facade | Store composes all managers |
+    | 2 | User, Location, Vehicle (type + status + daily cost) | Entity | Core domain objects |
+    | 3 | VehicleInventoryManager: search, reserve, release (mutex) | Repository + Thread-safe | Per-vehicle mutex prevents double-booking |
+    | 4 | Reservation: SCHEDULED -> IN_USE -> COMPLETED / CANCELLED | Lifecycle | DateInterval.overlaps() prevents conflicts |
+    | 5 | DailyBillingStrategy: days * dailyRentalCost | Strategy (billing) | Pluggable billing algorithms |
+    | 6 | UPIPaymentStrategy processes payment | Strategy (payment) | Pluggable payment methods |
+    |  |  |  |  |
+    | **Search + Book** = Steps 2-4 | **Return + Bill** = Step 5 | **Pay** = Step 6 | **Thread Safety** = Step 3 |
+endlegend
+
+@enduml

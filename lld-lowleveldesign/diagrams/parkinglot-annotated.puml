@@ -1,0 +1,393 @@
+@startuml ParkingLot_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Parking Lot System (Annotated for Interview)</size>\n<size:11>Trace: "Car arrives at entrance gate. System finds a free spot on Level 1, issues ticket. Car exits, price calculated, payment processed, spot freed."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — ParkingLot
+' ====================================================================
+class ParkingLot <<Facade>> {
+    - building : ParkingBuilding*
+    - entranceGate : EntranceGate*
+    - exitGate : ExitGate*
+    --
+    + ParkingLot(building, entranceGate, exitGate)
+    + vehicleArrives(vehicle) : Ticket*
+    + vehicleExits(ticket, payment) : void
+}
+
+note top of ParkingLot #BBDEFB
+    **STEP 1 - Start here.**
+    "Car arrives at the parking lot.
+    Client calls vehicleArrives(vehicle).
+    **Facade** hides: entrance gate, building
+    (levels, spots, managers), exit gate,
+    pricing, and payment. Two simple APIs:
+    vehicleArrives() and vehicleExits()."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: VEHICLE + TICKET
+' ====================================================================
+class Vehicle {
+    - vehicleNumber : string
+    - vehicleType : VehicleType
+    --
+    + Vehicle(vehicleNumber, vehicleType)
+    + getVehicleNumber() : string
+    + getVehicleType() : VehicleType
+}
+
+enum VehicleType {
+    TWO_WHEELER
+    FOUR_WHEELER
+}
+
+class Ticket {
+    - vehicle : Vehicle*
+    - level : ParkingLevel*
+    - spot : ParkingSpot*
+    - entryTime : time_t
+    --
+    + Ticket(vehicle, level, spot)
+    + getVehicle() : Vehicle*
+    + getLevel() : ParkingLevel*
+    + getSpot() : ParkingSpot*
+    + getEntryTime() : time_t
+}
+
+note top of Vehicle #C8E6C9
+    **STEP 2 - What's entering?**
+    "**Vehicle** has a number plate and a type
+    (TWO_WHEELER or FOUR_WHEELER).
+    Type determines which spot manager
+    handles it."
+
+    "**Ticket** is issued on entry — records
+    vehicle, which level, which spot, and
+    entry timestamp. Used at exit to
+    calculate parking fee."
+end note
+
+Vehicle --> VehicleType
+Ticket --> Vehicle : for vehicle >
+Ticket --> ParkingLevel : on level >
+Ticket --> ParkingSpot : at spot >
+
+
+' ====================================================================
+'  STEP 3: ENTRANCE + EXIT GATES
+' ====================================================================
+class EntranceGate {
+    --
+    + enter(building, vehicle) : Ticket*
+}
+
+class ExitGate {
+    - costComputation : CostComputation*
+    --
+    + ExitGate(costComputation)
+    - calculatePrice(ticket) : double
+    + completeExit(building, ticket, payment) : void
+}
+
+note top of EntranceGate #C8E6C9
+    **STEP 3 - Entry and exit.**
+    "**EntranceGate.enter()**: delegates to
+    building.allocate(vehicle) to find a spot
+    and issue a Ticket."
+
+    "**ExitGate.completeExit()**: calculates
+    price via CostComputation, processes
+    payment, then releases the spot.
+    If payment fails, spot stays occupied."
+end note
+
+ParkingLot --> EntranceGate : has >
+ParkingLot --> ExitGate : has >
+EntranceGate --> ParkingBuilding : allocates via >
+ExitGate --> CostComputation : prices via >
+
+
+' ====================================================================
+'  STEP 4: BUILDING -> LEVEL -> SPOT HIERARCHY (Composition)
+' ====================================================================
+class ParkingBuilding {
+    - levels : vector<ParkingLevel*>
+    --
+    + ParkingBuilding(levels, costComputation)
+    + allocate(vehicle) : Ticket*
+    + release(ticket) : void
+}
+
+class ParkingLevel {
+    - levelNumber : int
+    - managers : map<VehicleType, ParkingSpotManager*>
+    --
+    + ParkingLevel(levelNumber, managers)
+    + hasAvailability(type) : bool
+    + park(type) : ParkingSpot*
+    + unPark(type, spot) : void
+    + getLevelNumber() : int
+}
+
+class ParkingSpot {
+    - spotId : string
+    - isFree : bool = true
+    --
+    + ParkingSpot(spotId)
+    + isSpotFree() : bool
+    + occupySpot() : void
+    + releaseSpot() : void
+    + getSpotId() : string
+}
+
+note top of ParkingBuilding #FFCDD2
+    **STEP 4 - Physical structure. (KEY STEP)**
+    "**Composition hierarchy:**
+    ParkingBuilding has multiple Levels.
+    Each Level has ParkingSpotManagers
+    mapped by VehicleType.
+    Each Manager owns ParkingSpots."
+
+    "**allocate(vehicle)**:
+    1. Get vehicle's VehicleType
+    2. Iterate levels top to bottom
+    3. Check level.hasAvailability(type)
+    4. If yes: level.park(type) -> get spot
+    5. Create Ticket(vehicle, level, spot)
+    6. Return ticket"
+
+    "**release(ticket)**:
+    Get level + type + spot from ticket.
+    Call level.unPark(type, spot) -> frees spot."
+end note
+
+ParkingBuilding *-- ParkingLevel : has levels >
+ParkingLevel --> ParkingSpotManager : per vehicle type >
+ParkingLot --> ParkingBuilding : has >
+
+
+' ====================================================================
+'  STEP 5: SPOT MANAGERS — Template Method + Strategy (KEY)
+' ====================================================================
+class ParkingSpotManager {
+    # spots : vector<ParkingSpot*>
+    # strategy : ParkingSpotLookupStrategy*
+    # lock : mutex
+    --
+    # ParkingSpotManager(spots, strategy)
+    + park() : ParkingSpot*
+    + unPark(spot) : void
+    + hasFreeSpot() : bool
+}
+
+class TwoWheelerSpotManager {
+    --
+    + TwoWheelerSpotManager(spots, strategy)
+}
+
+class FourWheelerSpotManager {
+    --
+    + FourWheelerSpotManager(spots, strategy)
+}
+
+note top of ParkingSpotManager #FFE0B2
+    **STEP 5 - Spot management. (KEY STEP)**
+    "**ParkingSpotManager** is the base class.
+    TwoWheelerSpotManager and FourWheeler
+    SpotManager inherit from it."
+
+    "**Thread-safe** using mutex:
+    park(): lock -> strategy.selectSpot()
+    -> spot.occupySpot() -> unlock -> return spot
+    unPark(): lock -> spot.releaseSpot() -> unlock
+    hasFreeSpot(): lock -> iterate spots -> unlock"
+
+    "The **lookup strategy** decides WHICH
+    free spot to pick (Step 6)."
+    **Pattern: Template Method | SRP, OCP**
+end note
+
+ParkingSpotManager <|-- TwoWheelerSpotManager
+ParkingSpotManager <|-- FourWheelerSpotManager
+ParkingSpotManager o--> ParkingSpot : manages >
+
+
+' ====================================================================
+'  STEP 6: SPOT LOOKUP — Strategy Pattern
+' ====================================================================
+abstract class ParkingSpotLookupStrategy <<Strategy>> {
+    --
+    + {abstract} selectSpot(spots) : ParkingSpot*
+}
+
+class RandomLookupStrategy {
+    --
+    + selectSpot(spots) : ParkingSpot*
+}
+
+note bottom of ParkingSpotLookupStrategy #FFE0B2
+    **STEP 6 - Which spot to pick?**
+    "**Strategy Pattern** — spot selection
+    algorithm is pluggable."
+
+    "**RandomLookupStrategy**: picks first
+    available spot (iterates linearly)."
+
+    "Add NearestToElevatorStrategy?
+    One new class. Manager unchanged."
+    "Add NearestToExitStrategy?
+    One new class."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+ParkingSpotLookupStrategy <|-- RandomLookupStrategy
+ParkingSpotManager --> ParkingSpotLookupStrategy : uses >
+
+
+' ====================================================================
+'  STEP 7: PRICING — Strategy Pattern
+' ====================================================================
+class CostComputation {
+    - pricingStrategy : PricingStrategy*
+    --
+    + CostComputation(pricingStrategy)
+    + compute(ticket) : double
+}
+
+abstract class PricingStrategy <<Strategy>> {
+    --
+    + {abstract} calculate(ticket) : double
+}
+
+class FixedPricingStrategy {
+    --
+    + calculate(ticket) : double
+}
+
+note bottom of PricingStrategy #D1C4E9
+    **STEP 7 - How much to charge?**
+    "**Strategy Pattern** — pricing is pluggable."
+
+    "**FixedPricingStrategy**: returns Rs 100
+    flat (MVP). Add HourlyPricingStrategy
+    that uses ticket.getEntryTime() to compute
+    duration? One new class."
+
+    "**CostComputation** wraps the strategy.
+    ExitGate delegates to CostComputation.
+    compute(ticket) -> pricingStrategy
+    .calculate(ticket)."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+PricingStrategy <|-- FixedPricingStrategy
+CostComputation --> PricingStrategy : delegates >
+
+
+' ====================================================================
+'  STEP 8: PAYMENT — Strategy Pattern
+' ====================================================================
+abstract class Payment <<Strategy>> {
+    --
+    + {abstract} pay(amount) : bool
+}
+
+class CashPayment {
+    --
+    + pay(amount) : bool
+}
+
+class UPIPayment {
+    --
+    + pay(amount) : bool
+}
+
+note bottom of Payment #B2EBF2
+    **STEP 8 - How to pay?**
+    "**Strategy Pattern** — payment method
+    is pluggable."
+
+    "**CashPayment**: process cash.
+    **UPIPayment**: process UPI.
+    Add CardPayment? One new class."
+
+    "ExitGate.completeExit() calls
+    payment.pay(price). If true: release
+    spot. If false: spot stays occupied."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+Payment <|-- CashPayment
+Payment <|-- UPIPayment
+ExitGate --> Payment : processes via >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Car arrives -> ParkingLot.vehicleArrives() ->
+    EntranceGate.enter() -> ParkingBuilding.allocate() iterates
+    levels -> ParkingLevel checks VehicleType manager -> ParkingSpot
+    Manager uses **LookupStrategy** to find free spot (thread-safe
+    with mutex) -> Ticket issued."
+
+    "Car exits -> ParkingLot.vehicleExits() -> ExitGate calculates
+    price via **PricingStrategy** -> processes **Payment** (Cash/UPI)
+    -> spot released."
+
+    "3 Strategy hierarchies: **Spot Lookup** (which spot), **Pricing**
+    (how much), **Payment** (how to pay). Composition:
+    Building->Level->Manager->Spot. Thread-safe with mutex.
+    **Dependency Injection** throughout."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | Client calls ParkingLot.vehicleArrives()/vehicleExits() | Facade | Two simple APIs |
+    | 2 | Vehicle has type (TWO/FOUR_WHEELER). Ticket issued on entry | -- | Ticket = vehicle + level + spot + time |
+    | 3 | EntranceGate allocates. ExitGate prices + processes payment | -- | Gates coordinate the flow |
+    | 4 | Building -> Level -> SpotManager (per VehicleType) -> Spots | Composition | Hierarchical physical model |
+    | 5 | SpotManager: park()/unPark()/hasFreeSpot() — mutex protected | Template Method | Thread-safe operations |
+    | 6 | RandomLookupStrategy picks which free spot | Strategy (lookup) | Pluggable spot selection |
+    | 7 | FixedPricingStrategy returns Rs 100. CostComputation wraps it | Strategy (pricing) | Pluggable pricing model |
+    | 8 | CashPayment / UPIPayment. ExitGate processes payment | Strategy (payment) | Pluggable payment method |
+    |  |  |  |  |
+    | **Entry** = Steps 1-4,6 (allocate spot) | **Exit** = Steps 7-8 (price + pay) | **Thread Safety** = Step 5 (mutex) |  |
+endlegend
+
+@enduml

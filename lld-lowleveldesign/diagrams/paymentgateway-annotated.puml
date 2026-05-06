@@ -1,0 +1,550 @@
+@startuml PaymentGateway_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Payment Gateway System (Annotated for Interview)</size>\n<size:11>Trace: "Merchant creates payment of Rs 500. User selects UPI. Gateway authorizes via Razorpay, captures payment, notifies merchant via webhook."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — PaymentGateway
+' ====================================================================
+class PaymentGateway <<Facade>> {
+    - paymentProcessor : PaymentProcessor
+    - merchantRegistry : MerchantRegistry
+    - ledger : TransactionLedger
+    - notificationService : NotificationService
+    --
+    + createPayment(merchantId, amount, currency, method) : Payment
+    + authorizePayment(paymentId) : AuthResult
+    + capturePayment(paymentId) : CaptureResult
+    + refundPayment(paymentId, amount) : RefundResult
+    + getPaymentStatus(paymentId) : PaymentStatus
+    + getPayment(paymentId) : Payment
+}
+
+note top of PaymentGateway #BBDEFB
+    **STEP 1 - Start here.**
+    "Merchant integrates with this one class.
+    **Facade** hides: processor selection,
+    provider communication, state management,
+    ledger, and notifications."
+
+    "Standard payment flow:
+    createPayment() -> authorizePayment()
+    -> capturePayment(). Or one-step:
+    createPayment() with auto-capture."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: PAYMENT MODEL + STATE MACHINE
+' ====================================================================
+class Payment {
+    - paymentId : String
+    - merchantId : String
+    - amount : double
+    - currency : Currency
+    - paymentMethod : PaymentMethodType
+    - currentState : PaymentState
+    - status : PaymentStatus
+    - providerRef : String
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    - metadata : Map<String, String>
+    - observers : List<PaymentObserver>
+    --
+    + authorize() : void
+    + capture() : void
+    + fail(reason) : void
+    + refund() : void
+    + cancel() : void
+    + getAmount() : double
+    + getStatus() : PaymentStatus
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+}
+
+enum PaymentStatus {
+    CREATED
+    AUTHORIZED
+    CAPTURED
+    FAILED
+    REFUNDED
+    CANCELLED
+    PARTIALLY_REFUNDED
+}
+
+enum Currency {
+    INR
+    USD
+    EUR
+    GBP
+}
+
+enum PaymentMethodType {
+    CREDIT_CARD
+    DEBIT_CARD
+    UPI
+    NET_BANKING
+    WALLET
+}
+
+note top of Payment #FFCDD2
+    **STEP 2 - Payment is the central object.**
+    "Has amount, currency, method, status,
+    and provider reference. Uses **State Pattern**
+    (Step 3) and **Observer** (Step 7)."
+
+    "PaymentStatus tracks lifecycle:
+    CREATED -> AUTHORIZED -> CAPTURED
+    AUTHORIZED -> CANCELLED
+    CAPTURED -> REFUNDED
+    Any -> FAILED"
+end note
+
+Payment --> PaymentStatus
+Payment --> Currency
+Payment --> PaymentMethodType
+
+
+' ====================================================================
+'  STEP 3: STATE PATTERN — Payment Lifecycle (KEY)
+' ====================================================================
+interface PaymentState <<State>> {
+    + authorize(payment) : void
+    + capture(payment) : void
+    + fail(payment, reason) : void
+    + refund(payment) : void
+    + cancel(payment) : void
+}
+
+class CreatedState {
+    + authorize(payment) : void
+    + cancel(payment) : void
+    + fail(payment, reason) : void
+}
+
+class AuthorizedState {
+    + capture(payment) : void
+    + cancel(payment) : void
+    + fail(payment, reason) : void
+}
+
+class CapturedState {
+    + refund(payment) : void
+}
+
+class FailedState {
+    ' terminal — can retry with new payment
+}
+
+class RefundedState {
+    ' terminal
+}
+
+class CancelledState {
+    ' terminal
+}
+
+note bottom of PaymentState #FFCDD2
+    **STEP 3 - Payment lifecycle. (KEY STEP)**
+    "**State Pattern** — each state enforces
+    what transitions are valid."
+
+    "**CreatedState**: can authorize or cancel.
+    **AuthorizedState**: can capture or cancel.
+      (money reserved but not yet taken)
+    **CapturedState**: can refund.
+      (money transferred to merchant)
+    **FailedState/CancelledState**: terminal.
+    **RefundedState**: terminal."
+
+    "Created -> Authorized -> Captured
+    Authorized -> Cancelled (user changed mind)
+    Captured -> Refunded (return/dispute)
+    Any -> Failed (provider error)"
+
+    "Key: AuthorizedState.authorize() throws
+    — can't authorize twice. States enforce rules."
+    **Pattern: State | SRP, OCP**
+end note
+
+PaymentState <|.. CreatedState
+PaymentState <|.. AuthorizedState
+PaymentState <|.. CapturedState
+PaymentState <|.. FailedState
+PaymentState <|.. RefundedState
+PaymentState <|.. CancelledState
+Payment --> PaymentState : delegates >
+
+
+' ====================================================================
+'  STEP 4: PAYMENT PROVIDER — Strategy Pattern (KEY)
+' ====================================================================
+interface PaymentProvider <<Strategy>> {
+    + authorize(request) : ProviderResponse
+    + capture(providerRef, amount) : ProviderResponse
+    + refund(providerRef, amount) : ProviderResponse
+    + getStatus(providerRef) : ProviderResponse
+    + supports(method) : bool
+}
+
+class RazorpayProvider {
+    - apiKey : String
+    - apiSecret : String
+    --
+    + authorize(request) : ProviderResponse
+    + capture(providerRef, amount) : ProviderResponse
+    + refund(providerRef, amount) : ProviderResponse
+    + supports(method) : bool
+}
+
+class StripeProvider {
+    - apiKey : String
+    --
+    + authorize(request) : ProviderResponse
+    + capture(providerRef, amount) : ProviderResponse
+    + refund(providerRef, amount) : ProviderResponse
+    + supports(method) : bool
+}
+
+class PaytmProvider {
+    - merchantId : String
+    - merchantKey : String
+    --
+    + authorize(request) : ProviderResponse
+    + capture(providerRef, amount) : ProviderResponse
+    + refund(providerRef, amount) : ProviderResponse
+    + supports(method) : bool
+}
+
+class ProviderResponse {
+    - success : bool
+    - providerRef : String
+    - errorCode : String
+    - errorMessage : String
+    - rawResponse : String
+}
+
+note bottom of PaymentProvider #FFE0B2
+    **STEP 4 - Which provider? (KEY STEP)**
+    "**Strategy Pattern** — payment provider
+    is pluggable. All implement same interface."
+
+    "**RazorpayProvider**: India (UPI, cards, NB).
+    **StripeProvider**: global (cards, wallets).
+    **PaytmProvider**: India (wallet, UPI)."
+
+    "supports(UPI)=true for Razorpay, false for
+    Stripe. Provider selection uses this."
+
+    "Add PhonePeProvider? One new class.
+    Gateway unchanged."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+PaymentProvider <|.. RazorpayProvider
+PaymentProvider <|.. StripeProvider
+PaymentProvider <|.. PaytmProvider
+PaymentProvider --> ProviderResponse : returns >
+
+
+' ====================================================================
+'  STEP 5: PROVIDER SELECTOR — Routing Logic
+' ====================================================================
+interface ProviderSelector <<Strategy>> {
+    + selectProvider(payment) : PaymentProvider
+}
+
+class MethodBasedSelector {
+    - providerMap : Map<PaymentMethodType, PaymentProvider>
+    --
+    + selectProvider(payment) : PaymentProvider
+}
+
+class CostBasedSelector {
+    - providerCosts : Map<PaymentProvider, double>
+    --
+    + selectProvider(payment) : PaymentProvider
+}
+
+class FailoverSelector {
+    - primary : PaymentProvider
+    - fallback : PaymentProvider
+    --
+    + selectProvider(payment) : PaymentProvider
+}
+
+note bottom of ProviderSelector #FFE0B2
+    **STEP 5 - Route to the right provider.**
+    "Multiple providers. Which one for this payment?"
+
+    "**Strategy Pattern** — routing is pluggable.
+    **MethodBased**: UPI -> Razorpay, Cards -> Stripe.
+    **CostBased**: pick cheapest transaction fee.
+    **Failover**: try primary, if down use fallback."
+
+    "Merchant can configure their preferred routing."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+ProviderSelector <|.. MethodBasedSelector
+ProviderSelector <|.. CostBasedSelector
+ProviderSelector <|.. FailoverSelector
+ProviderSelector --> PaymentProvider : selects >
+
+
+' ====================================================================
+'  STEP 6: PAYMENT PROCESSOR — Orchestrates the Flow
+' ====================================================================
+class PaymentProcessor {
+    - providerSelector : ProviderSelector
+    - retryPolicy : RetryPolicy
+    --
+    + processAuthorization(payment) : AuthResult
+    + processCapture(payment) : CaptureResult
+    + processRefund(payment, amount) : RefundResult
+}
+
+class AuthResult {
+    - success : bool
+    - providerRef : String
+    - errorMessage : String
+}
+
+class CaptureResult {
+    - success : bool
+    - capturedAmount : double
+}
+
+class RefundResult {
+    - success : bool
+    - refundedAmount : double
+    - refundId : String
+}
+
+interface RetryPolicy <<Strategy>> {
+    + shouldRetry(attempt, error) : bool
+    + getDelayMs(attempt) : long
+}
+
+class ExponentialBackoffRetry {
+    - maxRetries : int
+    --
+    + shouldRetry(attempt, error) : bool
+    + getDelayMs(attempt) : long
+}
+
+class NoRetry {
+    + shouldRetry(attempt, error) : bool
+    + getDelayMs(attempt) : long
+}
+
+note bottom of PaymentProcessor #D1C4E9
+    **STEP 6 - Orchestrates the flow.**
+    "processAuthorization(payment):
+    1. providerSelector.selectProvider(payment)
+    2. provider.authorize(request)
+    3. If success: payment.authorize()
+       (state: CREATED -> AUTHORIZED)
+    4. If fail: retryPolicy.shouldRetry()?
+       Yes -> retry. No -> payment.fail()."
+
+    "Same pattern for capture and refund.
+    Retry via **Strategy** — ExponentialBackoff
+    or NoRetry."
+    **Pattern: Orchestrator | SRP**
+end note
+
+PaymentProcessor --> ProviderSelector : uses >
+PaymentProcessor --> RetryPolicy : uses >
+RetryPolicy <|.. ExponentialBackoffRetry
+RetryPolicy <|.. NoRetry
+PaymentGateway --> PaymentProcessor
+
+
+' ====================================================================
+'  STEP 7: OBSERVER — Notifications + Ledger
+' ====================================================================
+interface PaymentObserver <<Observer>> {
+    + onPaymentEvent(payment, event) : void
+}
+
+class WebhookNotifier {
+    - webhookUrl : String
+    --
+    + onPaymentEvent(payment, event) : void
+}
+
+class LedgerObserver {
+    - ledger : TransactionLedger
+    --
+    + onPaymentEvent(payment, event) : void
+}
+
+class AuditLogObserver {
+    --
+    + onPaymentEvent(payment, event) : void
+}
+
+class FraudCheckObserver {
+    --
+    + onPaymentEvent(payment, event) : void
+}
+
+class TransactionLedger {
+    - entries : Map<String, List<LedgerEntry>>
+    --
+    + record(paymentId, entry) : void
+    + getEntries(paymentId) : List<LedgerEntry>
+    + getMerchantBalance(merchantId) : double
+}
+
+class LedgerEntry {
+    - type : LedgerEntryType
+    - amount : double
+    - timestamp : LocalDateTime
+    - description : String
+}
+
+enum LedgerEntryType {
+    AUTHORIZATION
+    CAPTURE
+    REFUND
+    FEE
+    SETTLEMENT
+}
+
+note bottom of PaymentObserver #B2EBF2
+    **STEP 7 - React to payment events.**
+    "On every state change, Payment calls
+    notifyObservers(). **Observer Pattern**:"
+
+    "**WebhookNotifier**: POSTs event to merchant's
+    webhook URL ('payment.captured' with details).
+    **LedgerObserver**: records debit/credit in
+    double-entry ledger.
+    **AuditLogObserver**: compliance trail.
+    **FraudCheckObserver**: flags suspicious patterns."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+PaymentObserver <|.. WebhookNotifier
+PaymentObserver <|.. LedgerObserver
+PaymentObserver <|.. AuditLogObserver
+PaymentObserver <|.. FraudCheckObserver
+Payment --> PaymentObserver : notifies >
+LedgerObserver --> TransactionLedger : writes to >
+TransactionLedger *-- LedgerEntry
+LedgerEntry --> LedgerEntryType
+PaymentGateway --> TransactionLedger
+
+
+' ====================================================================
+'  STEP 8: MERCHANT + IDEMPOTENCY
+' ====================================================================
+class Merchant {
+    - merchantId : String
+    - name : String
+    - apiKey : String
+    - webhookUrl : String
+    - enabledMethods : Set<PaymentMethodType>
+    --
+    + getMerchantId() : String
+    + getWebhookUrl() : String
+    + isMethodEnabled(method) : bool
+}
+
+class MerchantRegistry {
+    - merchants : Map<String, Merchant>
+    --
+    + getMerchant(merchantId) : Merchant
+    + registerMerchant(merchant) : void
+    + authenticate(apiKey) : Merchant
+}
+
+class IdempotencyManager {
+    - keys : Map<String, Payment>
+    --
+    + checkIdempotency(key) : Payment
+    + register(key, payment) : void
+}
+
+note bottom of IdempotencyManager #C8E6C9
+    **STEP 8 - Production concerns.**
+    "**Merchant**: has API key, webhook URL,
+    and enabled payment methods."
+
+    "**IdempotencyManager**: prevents duplicate
+    payments. If same idempotency key is sent
+    twice, returns the original Payment instead
+    of creating a new one. Critical for retries."
+end note
+
+PaymentGateway --> MerchantRegistry
+PaymentGateway --> IdempotencyManager
+MerchantRegistry o--> Merchant
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Merchant calls createPayment(Rs 500, UPI).
+    Gateway authenticates merchant, checks idempotency.
+    PaymentProcessor selects Razorpay via **ProviderSelector**
+    (**Strategy**). Razorpay authorizes (CREATED->AUTHORIZED via
+    **State Pattern**). Merchant calls capturePayment()
+    (AUTHORIZED->CAPTURED). **Observer** chain: WebhookNotifier
+    POSTs to merchant, LedgerObserver records capture,
+    AuditLog logs, FraudCheck scans."
+
+    "5 patterns: **Facade**, **State** (payment lifecycle),
+    **Strategy** (x3: provider, selector, retry),
+    **Observer** (webhook, ledger, audit, fraud)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Merchant calls PaymentGateway.createPayment() | Facade | SRP, DIP |
+    | 2 | Payment: amount, currency, method, status, provider ref | -- | SRP |
+    | 3 | Created -> Authorized -> Captured / Cancelled / Failed / Refunded | State | SRP, OCP |
+    | 4 | Razorpay / Stripe / Paytm — all implement PaymentProvider | Strategy (provider) | OCP, DIP, LSP |
+    | 5 | MethodBased / CostBased / Failover routing | Strategy (selector) | OCP, DIP |
+    | 6 | Processor orchestrates: select provider -> call -> retry -> update state | Orchestrator | SRP |
+    | 7 | Webhook, Ledger, AuditLog, FraudCheck all notified | Observer | OCP, SRP |
+    | 8 | Merchant auth, idempotency key prevents duplicate payments | -- | Safety |
+    |  |  |  |  |
+    | **Auth + Capture** = Steps 3-6 | **Notify** = Step 7 | **Safety** = Step 8 (idempotency) |  |
+endlegend
+
+@enduml

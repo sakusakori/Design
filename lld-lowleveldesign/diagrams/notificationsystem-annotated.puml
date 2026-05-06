@@ -1,0 +1,698 @@
+@startuml NotificationSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Notification System (Annotated for Interview)</size>\n<size:11>Trace: "Service fires event 'order shipped'. System resolves recipients, picks channels, renders template, delivers, tracks, retries on failure."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class NotificationService <<Facade>> {
+    - router : NotificationRouter
+    - dispatcher : NotificationDispatcher
+    - templateEngine : TemplateEngine
+    - preferenceStore : UserPreferenceStore
+    - rateLimiter : RateLimiter
+    - deliveryTracker : DeliveryTracker
+    --
+    + send(request) : NotificationResult
+    + sendBulk(requests) : List<NotificationResult>
+    + scheduleNotification(request, sendAt) : String
+    + cancelScheduled(notificationId) : void
+    + getDeliveryStatus(notificationId) : DeliveryStatus
+    + getUserNotifications(userId) : List<Notification>
+}
+
+note top of NotificationService #BBDEFB
+    **STEP 1 - Start here.**
+    "Any service (orders, payments, auth) calls
+    NotificationService.send(request). This
+    **Facade** coordinates template rendering,
+    channel routing, rate limiting, delivery,
+    retry, and tracking. Callers don't know
+    about email/SMS/push internals."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: NOTIFICATION REQUEST + EVENT
+' ====================================================================
+class NotificationRequest {
+    - eventType : EventType
+    - recipientId : String
+    - recipientGroup : RecipientGroup
+    - payload : Map<String, Object>
+    - priority : NotificationPriority
+    - channelOverride : ChannelType
+    - idempotencyKey : String
+    --
+    + getPayload() : Map<String, Object>
+    + hasChannelOverride() : boolean
+}
+
+enum EventType {
+    ORDER_PLACED
+    ORDER_SHIPPED
+    ORDER_DELIVERED
+    PAYMENT_SUCCESS
+    PAYMENT_FAILED
+    OTP_VERIFICATION
+    PASSWORD_RESET
+    PROMO_CAMPAIGN
+    FRIEND_REQUEST
+    SYSTEM_ALERT
+}
+
+enum NotificationPriority {
+    CRITICAL
+    HIGH
+    NORMAL
+    LOW
+    MARKETING
+}
+
+enum RecipientGroup {
+    SINGLE_USER
+    USER_SEGMENT
+    ALL_USERS
+    TOPIC_SUBSCRIBERS
+}
+
+note top of NotificationRequest #C8E6C9
+    **STEP 2 - What triggers a notification?**
+    "Upstream services fire events: ORDER_SHIPPED,
+    PAYMENT_FAILED, OTP_VERIFICATION, etc.
+    **NotificationRequest** carries: event type,
+    recipient (single/segment/all), dynamic
+    payload (orderId, amount), priority, and
+    an idempotencyKey (prevent duplicates)."
+end note
+
+NotificationRequest --> EventType
+NotificationRequest --> NotificationPriority
+NotificationRequest --> RecipientGroup
+
+
+' ====================================================================
+'  STEP 3: NOTIFICATION MODEL
+' ====================================================================
+class Notification {
+    - notificationId : String
+    - recipientId : String
+    - channel : ChannelType
+    - subject : String
+    - body : String
+    - status : DeliveryStatus
+    - priority : NotificationPriority
+    - createdAt : LocalDateTime
+    - sentAt : LocalDateTime
+    - deliveredAt : LocalDateTime
+    - readAt : LocalDateTime
+    - retryCount : int
+    - metadata : Map<String, String>
+    --
+    + markSent() : void
+    + markDelivered() : void
+    + markRead() : void
+    + markFailed(reason) : void
+}
+
+enum DeliveryStatus {
+    PENDING
+    QUEUED
+    SENT
+    DELIVERED
+    READ
+    FAILED
+    BOUNCED
+    SUPPRESSED
+}
+
+enum ChannelType {
+    EMAIL
+    SMS
+    PUSH
+    IN_APP
+    WHATSAPP
+    SLACK
+    WEBHOOK
+}
+
+note top of Notification #C8E6C9
+    **STEP 3 - The notification object.**
+    "Each delivery attempt creates a Notification
+    with channel, content, status, timestamps.
+    Status lifecycle: PENDING -> QUEUED -> SENT
+    -> DELIVERED -> READ (or FAILED/BOUNCED).
+    7 channel types — extensible."
+end note
+
+Notification --> ChannelType
+Notification --> DeliveryStatus
+Notification --> NotificationPriority
+
+
+' ====================================================================
+'  STEP 4: TEMPLATE ENGINE — Strategy Pattern
+' ====================================================================
+class TemplateEngine {
+    - templates : Map<TemplateKey, NotificationTemplate>
+    - renderer : TemplateRenderer
+    --
+    + render(eventType, channel, payload) : RenderedContent
+    + registerTemplate(key, template) : void
+}
+
+class TemplateKey {
+    - eventType : EventType
+    - channel : ChannelType
+    - locale : String
+}
+
+class NotificationTemplate {
+    - templateId : String
+    - subjectTemplate : String
+    - bodyTemplate : String
+    - channel : ChannelType
+    - locale : String
+    --
+    + getSubject() : String
+    + getBody() : String
+}
+
+class RenderedContent {
+    - subject : String
+    - body : String
+    - htmlBody : String
+    - attachments : List<String>
+}
+
+interface TemplateRenderer <<Strategy>> {
+    + render(template, payload) : RenderedContent
+}
+
+class HandlebarsRenderer {
+    + render(template, payload) : RenderedContent
+}
+
+class FreemarkerRenderer {
+    + render(template, payload) : RenderedContent
+}
+
+class SimpleTextRenderer {
+    + render(template, payload) : RenderedContent
+}
+
+note bottom of TemplateRenderer #FFE0B2
+    **STEP 4 - Render the content.**
+    "Same event, different channels need
+    different templates. ORDER_SHIPPED email
+    is HTML-rich. SMS is 160 chars. Push is
+    title + body."
+
+    "**Strategy Pattern** — rendering engine
+    is pluggable: Handlebars for rich HTML,
+    SimpleText for SMS, Freemarker for complex.
+    Templates stored per (event + channel + locale)."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+TemplateRenderer <|.. HandlebarsRenderer
+TemplateRenderer <|.. FreemarkerRenderer
+TemplateRenderer <|.. SimpleTextRenderer
+TemplateEngine --> TemplateRenderer : delegates >
+TemplateEngine --> TemplateKey : indexed by >
+TemplateEngine --> NotificationTemplate : stores >
+TemplateEngine --> RenderedContent : produces >
+NotificationService --> TemplateEngine
+
+
+' ====================================================================
+'  STEP 5: CHANNEL ROUTING — Chain of Responsibility + User Prefs
+' ====================================================================
+class NotificationRouter {
+    - preferenceStore : UserPreferenceStore
+    - handlerChain : RoutingHandler
+    --
+    + resolveChannels(request) : List<ChannelType>
+}
+
+abstract class RoutingHandler <<Handler>> {
+    # nextHandler : RoutingHandler
+    --
+    + setNext(handler) : RoutingHandler
+    + {abstract} handle(request, channels) : List<ChannelType>
+}
+
+class PriorityRoutingHandler {
+    + handle(request, channels) : List<ChannelType>
+}
+
+class UserPreferenceHandler {
+    - preferenceStore : UserPreferenceStore
+    --
+    + handle(request, channels) : List<ChannelType>
+}
+
+class ChannelOverrideHandler {
+    + handle(request, channels) : List<ChannelType>
+}
+
+class QuietHoursHandler {
+    + handle(request, channels) : List<ChannelType>
+}
+
+class UserPreferenceStore {
+    - preferences : Map<String, UserPreference>
+    --
+    + getPreference(userId) : UserPreference
+    + updatePreference(userId, pref) : void
+}
+
+class UserPreference {
+    - userId : String
+    - enabledChannels : Set<ChannelType>
+    - mutedEventTypes : Set<EventType>
+    - quietHoursStart : LocalTime
+    - quietHoursEnd : LocalTime
+    - locale : String
+    --
+    + isChannelEnabled(ch) : boolean
+    + isEventMuted(event) : boolean
+    + isQuietHours(now) : boolean
+}
+
+note bottom of RoutingHandler #FFE0B2
+    **STEP 5 - Which channels? (KEY STEP)**
+    "OTP must go via SMS+Email. Promo only if
+    user opted in. No push during quiet hours."
+
+    "**Chain of Responsibility:**
+    1. **PriorityHandler**: CRITICAL -> all channels.
+       OTP -> SMS+Email forcefully.
+    2. **UserPreferenceHandler**: filter by user's
+       enabled channels and muted events.
+    3. **ChannelOverrideHandler**: if caller forced
+       a specific channel, use it.
+    4. **QuietHoursHandler**: suppress push/SMS
+       during 10pm-8am (except CRITICAL)."
+
+    "Each handler refines the channel list.
+    Add GDPRConsentHandler? Insert in chain."
+    **Pattern: Chain of Responsibility | OCP, SRP**
+end note
+
+RoutingHandler <|-- PriorityRoutingHandler
+RoutingHandler <|-- UserPreferenceHandler
+RoutingHandler <|-- ChannelOverrideHandler
+RoutingHandler <|-- QuietHoursHandler
+RoutingHandler o--> RoutingHandler : next >
+NotificationRouter --> RoutingHandler : uses chain >
+NotificationRouter --> UserPreferenceStore
+UserPreferenceStore --> UserPreference
+NotificationService --> NotificationRouter
+
+
+' ====================================================================
+'  STEP 6: CHANNEL PROVIDERS — Strategy Pattern (CORE)
+' ====================================================================
+interface ChannelProvider <<Strategy>> {
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+    + isHealthy() : boolean
+}
+
+class EmailProvider {
+    - smtpHost : String
+    - fromAddress : String
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class SMSProvider {
+    - apiKey : String
+    - senderId : String
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class PushProvider {
+    - fcmKey : String
+    - apnsKey : String
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class InAppProvider {
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class WhatsAppProvider {
+    - businessApiKey : String
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class SlackProvider {
+    - webhookUrl : String
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class WebhookProvider {
+    - targetUrl : String
+    --
+    + send(notification) : ProviderResult
+    + getChannel() : ChannelType
+}
+
+class ProviderResult {
+    - success : boolean
+    - providerId : String
+    - externalId : String
+    - errorMessage : String
+    - latencyMs : long
+}
+
+note bottom of ChannelProvider #FFCDD2
+    **STEP 6 - Deliver via the right channel.**
+    "**Strategy Pattern** — each channel is a
+    pluggable provider. All implement send()."
+
+    "**EmailProvider**: SMTP/SendGrid/SES.
+    **SMSProvider**: Twilio/SNS.
+    **PushProvider**: FCM (Android) + APNs (iOS).
+    **InApp**: write to DB, show in bell icon.
+    **WhatsApp**: Business API.
+    **Slack/Webhook**: for integrations."
+
+    "Add TelegramProvider? One new class.
+    ProviderResult tracks success + latency."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+ChannelProvider <|.. EmailProvider
+ChannelProvider <|.. SMSProvider
+ChannelProvider <|.. PushProvider
+ChannelProvider <|.. InAppProvider
+ChannelProvider <|.. WhatsAppProvider
+ChannelProvider <|.. SlackProvider
+ChannelProvider <|.. WebhookProvider
+ChannelProvider --> ProviderResult : returns >
+
+
+' ====================================================================
+'  STEP 7: DISPATCHER + QUEUE — Prioritized Delivery
+' ====================================================================
+class NotificationDispatcher {
+    - providerRegistry : Map<ChannelType, ChannelProvider>
+    - queue : PriorityQueue<Notification>
+    - maxConcurrent : int
+    - fallbackRegistry : Map<ChannelType, ChannelProvider>
+    --
+    + dispatch(notification) : ProviderResult
+    + enqueue(notification) : void
+    + processQueue() : void
+    + registerProvider(channel, provider) : void
+    + registerFallback(channel, provider) : void
+}
+
+note bottom of NotificationDispatcher #D1C4E9
+    **STEP 7 - Prioritized dispatch.**
+    "Notifications enter a PriorityQueue.
+    CRITICAL OTPs processed immediately.
+    MARKETING campaigns batched."
+
+    "Dispatcher looks up the ChannelProvider
+    for the notification's channel and calls
+    send(). If primary provider fails, tries
+    **fallback** (SendGrid down? Try SES).
+    maxConcurrent limits parallel sends."
+end note
+
+NotificationDispatcher --> ChannelProvider : delivers via >
+NotificationDispatcher o--> Notification : queues >
+NotificationService --> NotificationDispatcher
+
+
+' ====================================================================
+'  STEP 8: RATE LIMITER — Strategy Pattern
+' ====================================================================
+interface RateLimitStrategy <<Strategy>> {
+    + isAllowed(userId, eventType) : boolean
+    + recordSend(userId, eventType) : void
+}
+
+class PerUserRateLimiter {
+    - maxPerHour : int
+    --
+    + isAllowed(userId, eventType) : boolean
+    + recordSend(userId, eventType) : void
+}
+
+class PerEventRateLimiter {
+    - maxPerEventPerDay : Map<EventType, Integer>
+    --
+    + isAllowed(userId, eventType) : boolean
+    + recordSend(userId, eventType) : void
+}
+
+class SlidingWindowRateLimiter {
+    - windowMs : long
+    - maxInWindow : int
+    --
+    + isAllowed(userId, eventType) : boolean
+    + recordSend(userId, eventType) : void
+}
+
+class RateLimiter {
+    - strategies : List<RateLimitStrategy>
+    --
+    + checkLimit(userId, eventType) : boolean
+    + recordSend(userId, eventType) : void
+}
+
+note bottom of RateLimitStrategy #FFCDD2
+    **STEP 8 - Don't spam the user.**
+    "**Strategy Pattern** — rate limiting
+    is pluggable."
+
+    "**PerUser**: max 20 notifications/hour.
+    **PerEvent**: max 3 OTPs/day, 1 promo/day.
+    **SlidingWindow**: max 5 in any 10-min window."
+
+    "RateLimiter runs ALL strategies. If any
+    says 'not allowed', notification is SUPPRESSED.
+    Prevents notification fatigue."
+    **Pattern: Strategy | OCP, SRP**
+end note
+
+RateLimitStrategy <|.. PerUserRateLimiter
+RateLimitStrategy <|.. PerEventRateLimiter
+RateLimitStrategy <|.. SlidingWindowRateLimiter
+RateLimiter o--> RateLimitStrategy : checks >
+NotificationService --> RateLimiter
+
+
+' ====================================================================
+'  STEP 9: RETRY — Strategy Pattern
+' ====================================================================
+interface RetryStrategy <<Strategy>> {
+    + shouldRetry(notification, attempt, error) : boolean
+    + getDelayMs(attempt) : long
+}
+
+class ExponentialBackoffRetry {
+    - maxRetries : int
+    - baseDelayMs : long
+    --
+    + shouldRetry(notification, attempt, error) : boolean
+    + getDelayMs(attempt) : long
+}
+
+class ImmediateRetry {
+    - maxRetries : int
+    --
+    + shouldRetry(notification, attempt, error) : boolean
+    + getDelayMs(attempt) : long
+}
+
+class NoRetry {
+    + shouldRetry(notification, attempt, error) : boolean
+    + getDelayMs(attempt) : long
+}
+
+note bottom of RetryStrategy #FFCDD2
+    **STEP 9 - Handle delivery failures.**
+    "SMS provider timeout? Push token expired?"
+
+    "**Strategy Pattern:**
+    **ExponentialBackoff**: 1s, 2s, 4s, 8s.
+    **ImmediateRetry**: retry once instantly
+    (for transient network errors).
+    **NoRetry**: marketing — don't bother.
+    CRITICAL OTPs: immediate retry + fallback."
+    **Pattern: Strategy | OCP**
+end note
+
+RetryStrategy <|.. ExponentialBackoffRetry
+RetryStrategy <|.. ImmediateRetry
+RetryStrategy <|.. NoRetry
+NotificationDispatcher --> RetryStrategy : uses >
+
+
+' ====================================================================
+'  STEP 10: DELIVERY TRACKING — Observer Pattern
+' ====================================================================
+class DeliveryTracker {
+    - notifications : Map<String, Notification>
+    - observers : List<DeliveryObserver>
+    --
+    + track(notification) : void
+    + updateStatus(notificationId, status) : void
+    + getStatus(notificationId) : DeliveryStatus
+    + getMetrics(from, to) : DeliveryMetrics
+    + registerObserver(obs) : void
+}
+
+interface DeliveryObserver <<Observer>> {
+    + onDeliveryEvent(notification, oldStatus, newStatus) : void
+}
+
+class WebhookCallbackObserver {
+    + onDeliveryEvent(notification, oldStatus, newStatus) : void
+}
+
+class MetricsObserver {
+    + onDeliveryEvent(notification, oldStatus, newStatus) : void
+}
+
+class FailureAlertObserver {
+    - failureThreshold : int
+    --
+    + onDeliveryEvent(notification, oldStatus, newStatus) : void
+}
+
+class AuditLogObserver {
+    + onDeliveryEvent(notification, oldStatus, newStatus) : void
+}
+
+class DeliveryMetrics {
+    - totalSent : long
+    - totalDelivered : long
+    - totalFailed : long
+    - totalBounced : long
+    - avgLatencyMs : double
+    - deliveryRate : double
+    --
+    + getDeliveryRate() : double
+}
+
+note bottom of DeliveryObserver #B2EBF2
+    **STEP 10 - Track everything.**
+    "Every notification's delivery is tracked.
+    **Observer Pattern** — on status change:"
+
+    "**WebhookCallback**: notify caller service
+    that their notification was delivered/failed.
+    **MetricsObserver**: compute delivery rate,
+    avg latency, bounce rate for dashboards.
+    **FailureAlertObserver**: if failure rate
+    spikes, alert the on-call engineer.
+    **AuditLogObserver**: compliance trail."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+DeliveryObserver <|.. WebhookCallbackObserver
+DeliveryObserver <|.. MetricsObserver
+DeliveryObserver <|.. FailureAlertObserver
+DeliveryObserver <|.. AuditLogObserver
+DeliveryTracker --> DeliveryObserver : notifies >
+DeliveryTracker --> Notification : tracks >
+DeliveryTracker --> DeliveryMetrics : computes >
+NotificationService --> DeliveryTracker
+
+
+' ====================================================================
+'  RESULT
+' ====================================================================
+class NotificationResult {
+    - notificationId : String
+    - status : DeliveryStatus
+    - channelsSent : List<ChannelType>
+    - channelsSuppressed : List<ChannelType>
+    - suppressionReason : String
+}
+
+NotificationService --> NotificationResult : returns >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Service fires event -> NotificationService renders
+    template per channel (**Template Strategy**) -> Router resolves
+    channels via **Chain of Responsibility** (priority, user prefs,
+    quiet hours) -> RateLimiter checks limits (**Rate Limit Strategy**)
+    -> Dispatcher queues by priority, sends via **ChannelProvider**
+    (**Strategy**: Email/SMS/Push/WhatsApp/Slack) -> Failure? **Retry
+    Strategy** (backoff/immediate/none) + fallback provider -> Delivery
+    tracked, observers notified (**Observer**: webhook, metrics, alerts).
+    6 patterns: **Facade, Chain of Responsibility, Strategy (x5), Observer**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Any service calls NotificationService.send(request) | Facade | SRP, DIP |
+    | 2 | NotificationRequest: event type, recipient, priority, payload | -- | SRP |
+    | 3 | Notification: channel, content, status lifecycle, timestamps | -- | SRP |
+    | 4 | Render template per (event + channel + locale) | Strategy (template) | OCP, DIP |
+    | 5 | Route: priority -> user prefs -> override -> quiet hours | Chain of Responsibility | OCP, SRP |
+    | 6 | Deliver via Email / SMS / Push / InApp / WhatsApp / Slack | Strategy (channel) | OCP, DIP, LSP |
+    | 7 | Priority queue: CRITICAL first, MARKETING last. Fallback on failure | -- | SRP |
+    | 8 | Rate limit: per-user, per-event, sliding window | Strategy (rate limit) | OCP, SRP |
+    | 9 | Retry: exponential backoff / immediate / none | Strategy (retry) | OCP |
+    | 10 | Track delivery, webhook callback, metrics, failure alerts | Observer | OCP, SRP |
+    |  |  |  |  |
+    | **Render + Route** = Steps 4-5 | **Deliver** = Steps 6-7 | **Protect** = Steps 8-9 | **Track** = Step 10 |
+endlegend
+
+@enduml

@@ -1,0 +1,428 @@
+@startuml Cricbuzz_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Cricbuzz - Cricket Match Simulator (Annotated for Interview)</size>\n<size:11>Trace: "T20 match starts. Team A bats. Bowler bowls, batsman hits a 4. Score updated via Observer. After 20 overs, Team B chases."</size>
+
+
+' ====================================================================
+'  STEP 1: MATCH — Orchestrator
+' ====================================================================
+class Match {
+    - teamA : Team*
+    - teamB : Team*
+    - venue : string
+    - tossWinner : Team*
+    - innings : InningDetails*[2]
+    - matchType : MatchType*
+    --
+    + Match(teamA, teamB, venue, matchType)
+    + startMatch() : void
+    - toss(teamA, teamB) : Team*
+}
+
+note top of Match #BBDEFB
+    **STEP 1 - Start here.**
+    "Match is the **orchestrator**. It owns
+    two teams, a venue, a matchType, and
+    two innings."
+
+    "**startMatch()** flow:
+    1. Toss (random 50/50)
+    2. Create Inning 1 (toss winner bats)
+    3. Start Inning 1 (runsToWin = -1)
+    4. Swap teams
+    5. Create Inning 2 (target = inning1 runs + 1)
+    6. Start Inning 2 (runsToWin = target)
+    7. Print scorecards
+    8. Determine winner"
+    **Pattern: Facade | SRP**
+end note
+
+
+' ====================================================================
+'  STEP 2: MATCH TYPE — Strategy Pattern
+' ====================================================================
+abstract class MatchType <<Strategy>> {
+    --
+    + {abstract} noOfOvers() : int
+    + {abstract} maxOverCountBowlers() : int
+}
+
+class T20Match {
+    --
+    + noOfOvers() : int  // returns 20
+    + maxOverCountBowlers() : int  // returns 5
+}
+
+class OneDayMatch {
+    --
+    + noOfOvers() : int  // returns 50
+    + maxOverCountBowlers() : int  // returns 10
+}
+
+note top of MatchType #FFE0B2
+    **STEP 2 - What format?**
+    "**Strategy Pattern** — match format is
+    pluggable. T20: 20 overs, max 5 per bowler.
+    ODI: 50 overs, max 10 per bowler."
+
+    "Add TestMatch (unlimited overs)?
+    One new class. Match code unchanged."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+MatchType <|-- T20Match
+MatchType <|-- OneDayMatch
+Match --> MatchType : format >
+
+
+' ====================================================================
+'  STEP 3: TEAM + PLAYER
+' ====================================================================
+class Team {
+    - teamName : string
+    - playing11 : queue<PlayerDetails*>
+    - playing11List : vector<PlayerDetails*>
+    - bench : vector<PlayerDetails*>
+    - battingController : PlayerBattingController*
+    - bowlingController : PlayerBowlingController*
+    - isWinner : bool
+    --
+    + getTeamName() : string
+    + chooseNextBatsMan() : void
+    + chooseNextBowler(maxOverCount) : void
+    + getStriker() : PlayerDetails*
+    + setStriker(player) : void
+    + getNonStriker() : PlayerDetails*
+    + setNonStriker(player) : void
+    + getCurrentBowler() : PlayerDetails*
+    + printBattingScoreCard() : void
+    + printBowlingScoreCard() : void
+    + getTotalRuns() : int
+}
+
+class PlayerDetails {
+    + person : Person*
+    + playerType : PlayerType
+    + battingScoreCard : BattingScoreCard*
+    + bowlingScoreCard : BowlingScoreCard*
+    --
+    + PlayerDetails(person, playerType)
+    + printBattingScoreCard() : void
+    + printBowlingScoreCard() : void
+}
+
+class Person {
+    + name : string
+    + age : int
+    + address : string
+}
+
+enum PlayerType {
+    BATSMAN
+    BOWLER
+    WICKETKEEPER
+    CAPTAIN
+    ALLROUNDER
+}
+
+note top of Team #C8E6C9
+    **STEP 3 - Teams and players.**
+    "**Team** has 11 players (playing11) + bench.
+    Delegates batting to PlayerBattingController,
+    bowling to PlayerBowlingController."
+
+    "**PlayerDetails** composes: Person (name/age),
+    PlayerType (BATSMAN/BOWLER/ALLROUNDER),
+    BattingScoreCard, BowlingScoreCard."
+
+    "Team.getTotalRuns() sums all players' runs.
+    printBattingScoreCard() shows full batting card."
+    **Pattern: Delegation, Composition**
+end note
+
+Team *-- PlayerDetails : playing11 >
+PlayerDetails *-- Person : identity >
+PlayerDetails --> PlayerType
+Match --> Team : has 2 teams >
+
+
+' ====================================================================
+'  STEP 4: BATTING + BOWLING CONTROLLERS
+' ====================================================================
+class PlayerBattingController {
+    - yetToPlay : queue<PlayerDetails*>
+    - striker : PlayerDetails*
+    - nonStriker : PlayerDetails*
+    --
+    + getNextPlayer() : void
+    + getStriker() : PlayerDetails*
+    + setStriker(player) : void
+    + getNonStriker() : PlayerDetails*
+    + setNonStriker(player) : void
+}
+
+class PlayerBowlingController {
+    - bowlersList : deque<PlayerDetails*>
+    - bowlerVsOverCount : map<PlayerDetails*, int>
+    - currentBowler : PlayerDetails*
+    --
+    + getNextBowler(maxOverCountPerBowler) : void
+    + getCurrentBowler() : PlayerDetails*
+}
+
+note top of PlayerBattingController #C8E6C9
+    **STEP 4 - Who bats? Who bowls?**
+    "**PlayerBattingController**: manages batting
+    line-up. getNextPlayer() pops from queue:
+    1st call sets striker, 2nd sets non-striker.
+    On wicket: next from queue replaces striker."
+
+    "**PlayerBowlingController**: manages bowling
+    rotation. Uses deque for round-robin.
+    getNextBowler(): pops front, increments count,
+    pushes back (unless maxOvers reached).
+    Enforces max overs per bowler (5 in T20)."
+    **Pattern: Controller | SRP**
+end note
+
+Team --> PlayerBattingController : delegates batting >
+Team --> PlayerBowlingController : delegates bowling >
+PlayerBattingController o--> PlayerDetails : manages >
+PlayerBowlingController o--> PlayerDetails : rotates >
+
+
+' ====================================================================
+'  STEP 5: INNING -> OVER -> BALL HIERARCHY
+' ====================================================================
+class InningDetails {
+    - battingTeam : Team*
+    - bowlingTeam : Team*
+    - matchType : MatchType*
+    - overs : vector<OverDetails*>
+    --
+    + InningDetails(batting, bowling, matchType)
+    + start(runsToWin) : void
+    + getTotalRuns() : int
+}
+
+class OverDetails {
+    - overNumber : int
+    - balls : vector<BallDetails*>
+    - extraBallsCount : int
+    - bowledBy : PlayerDetails*
+    --
+    + OverDetails(overNumber, bowledBy)
+    + startOver(battingTeam, bowlingTeam, runsToWin) : bool
+}
+
+class BallDetails {
+    - ballNumber : int
+    - ballType : BallType
+    - runType : RunType
+    - playedBy : PlayerDetails*
+    - bowledBy : PlayerDetails*
+    - wicket : Wicket*
+    - scoreUpdaterObserverList : vector<ScoreUpdaterObserver*>
+    --
+    + BallDetails(ballNumber)
+    + startBallDelivery(batting, bowling, over) : void
+    - notifyUpdaters(ball) : void
+    - getRunType() : RunType
+    - isWicketTaken() : bool
+}
+
+enum BallType {
+    NORMAL
+    WIDEBALL
+    NOBALL
+}
+
+enum RunType {
+    ZERO
+    ONE
+    TWO
+    THREE
+    FOUR
+    SIX
+}
+
+note top of InningDetails #FFCDD2
+    **STEP 5 - The match hierarchy. (KEY)**
+    "Hierarchical composition:"
+    "**InningDetails** orchestrates N overs.
+    start(): select openers, loop through overs,
+    select bowler per over, swap striker after each."
+
+    "**OverDetails** orchestrates 6 legal balls.
+    startOver(): loop until 6 NORMAL balls bowled.
+    Wides/no-balls don't count. Handles wickets."
+
+    "**BallDetails** simulates one delivery.
+    startBallDelivery(): determine if wicket (20%),
+    if not: random runs (1/2/4/6). Swap striker
+    on odd runs. **Notify observers** to update
+    batting + bowling scorecards."
+
+    "Match -> Innings[2] -> Overs[20] -> Balls[6]"
+    **Composition: Match->Inning->Over->Ball**
+end note
+
+Match *-- InningDetails : has 2 innings >
+InningDetails *-- OverDetails : has overs >
+OverDetails *-- BallDetails : has balls >
+BallDetails --> BallType
+BallDetails --> RunType
+
+
+' ====================================================================
+'  STEP 6: SCORE CARDS + WICKET
+' ====================================================================
+class BattingScoreCard {
+    + totalRuns : int
+    + totalBallsPlayed : int
+    + totalFours : int
+    + totalSix : int
+    + strikeRate : double
+    + wicketDetails : Wicket*
+}
+
+class BowlingScoreCard {
+    + totalOversCount : int
+    + runsGiven : int
+    + wicketsTaken : int
+    + noBallCount : int
+    + wideBallCount : int
+    + economyRate : double
+}
+
+class Wicket {
+    - wicketType : WicketType
+    - takenBy : PlayerDetails*
+    - overDetail : OverDetails*
+    - ballDetail : BallDetails*
+}
+
+enum WicketType {
+    RUNOUT
+    BOLD
+    CATCH_OUT
+}
+
+PlayerDetails *-- BattingScoreCard : has >
+PlayerDetails *-- BowlingScoreCard : has >
+BattingScoreCard --> Wicket : if out >
+Wicket --> WicketType
+
+
+' ====================================================================
+'  STEP 7: OBSERVER PATTERN — Score Updates (KEY)
+' ====================================================================
+abstract class ScoreUpdaterObserver <<Observer>> {
+    --
+    + {abstract} update(ballDetails) : void
+}
+
+class BattingScoreUpdater {
+    --
+    + update(ballDetails) : void
+}
+
+class BowlingScoreUpdater {
+    --
+    + update(ballDetails) : void
+}
+
+note top of ScoreUpdaterObserver #FFE0B2
+    **STEP 7 - Score updates. (KEY STEP)**
+    "Every ball delivery must update BOTH
+    batting and bowling scorecards. But
+    BallDetails shouldn't know about
+    scorecard internals."
+
+    "**Observer Pattern**: BallDetails constructor
+    registers BattingScoreUpdater and
+    BowlingScoreUpdater as observers."
+
+    "After each ball: notifyUpdaters() calls
+    update() on both:"
+
+    "**BattingScoreUpdater.update()**:
+    FOUR -> runs+=4, totalFours++.
+    SIX -> runs+=6, totalSix++.
+    Always: totalBallsPlayed++.
+    If wicket: set wicketDetails."
+
+    "**BowlingScoreUpdater.update()**:
+    Add runs to runsGiven.
+    If ball 6 & NORMAL: totalOversCount++.
+    If wicket: wicketsTaken++.
+    If NOBALL: noBallCount++."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+ScoreUpdaterObserver <|-- BattingScoreUpdater
+ScoreUpdaterObserver <|-- BowlingScoreUpdater
+BallDetails --> ScoreUpdaterObserver : notifies >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "T20 match: Match.startMatch() -> toss -> Inning 1:
+    Team A bats 20 overs. Each over: select bowler (max 5 per bowler),
+    bowl 6 legal balls. Each ball: determine wicket (20%) or runs
+    (random 1/2/4/6). **Observer** updates batting + bowling scorecards.
+    Inning 2: Team B chases target. First to reach target wins."
+
+    "Key patterns: **Strategy** (MatchType: T20/ODI), **Observer**
+    (ScoreUpdater: batting + bowling cards updated independently),
+    **Composition** (Match->Inning->Over->Ball hierarchy),
+    **Controller** (batting line-up + bowling rotation),
+    **Delegation** (Team delegates to controllers)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | Match: toss, 2 innings, determine winner | Facade | Orchestrates entire match |
+    | 2 | T20Match (20 overs, max 5/bowler) vs OneDayMatch (50, max 10) | Strategy | Pluggable match format |
+    | 3 | Team has 11 PlayerDetails (Person + ScoreCards) | Composition | Player = Person + Type + ScoreCards |
+    | 4 | BattingController (queue) + BowlingController (deque + max overs) | Controller | Manages lineup + rotation |
+    | 5 | Inning -> Over (6 legal balls) -> Ball (runs or wicket) | Composition | Hierarchical match simulation |
+    | 6 | BattingScoreCard (runs, 4s, 6s) + BowlingScoreCard (overs, wickets) | DTO | Per-player statistics |
+    | 7 | BallDetails notifies BattingScoreUpdater + BowlingScoreUpdater | Observer | Decoupled score updates |
+    |  |  |  |  |
+    | **Match Flow** = Steps 1-2 | **Players** = Steps 3-4 | **Simulation** = Steps 5-7 | **Score** = Steps 6-7 |
+endlegend
+
+@enduml

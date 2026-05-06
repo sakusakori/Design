@@ -1,0 +1,369 @@
+@startuml RideSharingService_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Ride Sharing Service - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Rider requests a ride, system finds nearest driver, trip starts, driver delivers, fare calculated."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — RideSharingService
+' ====================================================================
+class RideSharingService <<Singleton>> {
+    - pricingStrategy : PricingStrategy
+    - driverMatchingStrategy : DriverMatchingStrategy
+    - trips : Map<String, Trip>
+    - {static} instance : RideSharingService
+    - drivers : Map<String, Driver>
+    - riders : Map<String, Rider>
+    --
+    + endTrip(tripId) : void
+    + setDriverMatchingStrategy(strategy) : void
+    + startTrip(tripId) : void
+    + requestRide(riderId, pickup, dropoff, rideType) : Trip
+    + registerRider(name, contact) : Rider
+    + acceptRide(tripId, driverId) : void
+    + registerDriver(name, contact, vehicle, location) : Driver
+}
+
+class RideSharingServiceDemo {
+    + main(args) : void
+}
+
+note top of RideSharingService #BBDEFB
+    **STEP 1 - Start here.**
+    "Rider opens the app. Client only talks to
+    this **Facade** (also a **Singleton** — one
+    service instance). It coordinates everything:
+    driver matching, trip management, pricing.
+    Rider calls requestRide(pickup, dropoff, SUV)."
+    **Patterns: Facade + Singleton | SRP, DIP**
+end note
+
+RideSharingServiceDemo --> RideSharingService
+
+
+' ====================================================================
+'  STEP 2: USER MODELS — User, Rider, Driver, Vehicle
+' ====================================================================
+class User {
+    - tripHistory : List<Trip>
+    - name : String
+    - id : String
+    - contact : String
+    --
+    + addTripToHistory(trip) : void
+}
+
+class Rider {
+    --
+    + onUpdate(trip) : void
+}
+
+class Driver {
+    - vehicle : Vehicle
+    - currentLocation : Location
+    - status : DriverStatus
+    --
+    + onUpdate(trip) : void
+}
+
+class Vehicle {
+    - model : String
+    - type : RideType
+    - licenseNumber : String
+}
+
+enum RideType {
+    SUV
+    SEDAN
+    AUTO
+}
+
+enum DriverStatus {
+    IN_TRIP
+    OFFLINE
+    ONLINE
+}
+
+class Location {
+    - longitude : double
+    - latitude : double
+    --
+    + distanceTo(location) : double
+}
+
+note top of User #C8E6C9
+    **STEP 2 - Core models.**
+    "**User** is the base (name, id, history).
+    **Rider** and **Driver** extend/relate to User.
+    Driver has a Vehicle, a Location, and a
+    DriverStatus (ONLINE/OFFLINE/IN_TRIP).
+    Vehicle has a RideType (SUV/SEDAN/AUTO)."
+end note
+
+Driver --> Vehicle : has >
+Driver --> DriverStatus : status >
+Driver --> Location : current location >
+Vehicle --> RideType : type >
+Rider --|> User
+Driver --|> User
+
+
+' ====================================================================
+'  STEP 3: DRIVER MATCHING — Strategy Pattern
+' ====================================================================
+interface DriverMatchingStrategy <<Strategy>> {
+    + findDrivers(drivers, location, rideType) : List<Driver>
+}
+
+class NearestDriverMatchingStrategy {
+    - MAX_DISTANCE_KM : double
+    --
+    + findDrivers(drivers, location, rideType) : List<Driver>
+}
+
+note left of DriverMatchingStrategy #FFE0B2
+    **STEP 3 - Find a driver.**
+    "Rider requested a ride. How do we
+    pick a driver? Could be nearest,
+    highest-rated, cheapest..."
+
+    "**Strategy Pattern** — matching
+    algorithm is pluggable.
+    NearestDriverMatchingStrategy
+    finds drivers within MAX_DISTANCE_KM.
+    Add RatingBasedStrategy? One new class."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+DriverMatchingStrategy <|.. NearestDriverMatchingStrategy
+RideSharingService --> DriverMatchingStrategy : uses >
+
+
+' ====================================================================
+'  STEP 4: TRIP CREATED — Central Domain Object
+' ====================================================================
+class Trip {
+    - status : TripStatus
+    - id : String
+    - driver : Driver
+    - observers : List<TripObserver>
+    - fare : double
+    - currentState : TripState
+    - pickupLocation : Location
+    - dropoffLocation : Location
+    - rider : Rider
+    --
+    + addObserver(observer) : void
+    + assignDriver(driver) : void
+    + endTrip() : void
+    + notifyObservers() : void
+    + setState(state) : void
+    + startTrip() : void
+}
+
+enum TripStatus {
+    COMPLETED
+    ASSIGNED
+    REQUESTED
+    IN_PROGRESS
+    CANCELLED
+}
+
+note top of Trip #FFCDD2
+    **STEP 4 - Trip is created.**
+    "requestRide() finds a driver, creates a Trip.
+    Trip starts in REQUESTED state. This is the
+    **central domain object** — it uses:
+    - **State Pattern** (trip lifecycle)
+    - **Observer Pattern** (notify rider + driver)"
+end note
+
+Trip --> TripStatus : tracks >
+Trip --> Location : pickup/dropoff >
+Trip --> Rider : for rider >
+Trip --> Driver : assigned to >
+RideSharingService --> Trip : manages >
+RideSharingService --> Rider : registers >
+RideSharingService --> Driver : registers >
+
+
+' ====================================================================
+'  STEP 5: STATE PATTERN — Trip Lifecycle
+' ====================================================================
+interface TripState <<State>> {
+    + request(trip) : void
+    + start(trip) : void
+    + assign(trip, driver) : void
+    + end(trip) : void
+}
+
+class RequestedState {
+    + request(trip) : void
+    + assign(trip, driver) : void
+    + end(trip) : void
+    + start(trip) : void
+}
+
+class AssignedState {
+    + request(trip) : void
+    + assign(trip, driver) : void
+    + end(trip) : void
+    + start(trip) : void
+}
+
+class InProgressState {
+    + request(trip) : void
+    + end(trip) : void
+    + start(trip) : void
+    + assign(trip, driver) : void
+}
+
+class CompletedState {
+    + request(trip) : void
+    + end(trip) : void
+    + start(trip) : void
+    + assign(trip, driver) : void
+}
+
+note bottom of TripState #FFCDD2
+    **STEP 5 - Trip moves through states.**
+    "Without this, Trip has huge if-else blocks.
+    **State Pattern** — each state is a class.
+    RequestedState: can assign a driver.
+    AssignedState: can start the trip.
+    InProgressState: can end the trip.
+    CompletedState: terminal."
+
+    Requested -> Assigned -> InProgress -> Completed
+    Any -> Cancelled
+
+    **Pattern: State | SRP, OCP**
+end note
+
+TripState <|.. RequestedState
+TripState <|.. AssignedState
+TripState <|.. InProgressState
+TripState <|.. CompletedState
+Trip --> TripState : delegates lifecycle >
+
+
+' ====================================================================
+'  STEP 6: OBSERVER PATTERN — Notifications
+' ====================================================================
+interface TripObserver <<Observer>> {
+    + onUpdate(trip) : void
+}
+
+note right of TripObserver #B2EBF2
+    **STEP 6 - Rider & Driver get notified.**
+    "On every state change, Trip calls
+    notifyObservers(). Both Driver and
+    Rider implement **TripObserver**."
+
+    "**Observer Pattern** — Trip doesn't
+    know how to send notifications.
+    Driver.onUpdate() updates driver status.
+    Rider.onUpdate() shows status in app.
+    Add SMS service? One new observer."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+TripObserver <|.. Driver
+TripObserver <|.. Rider
+Trip --> TripObserver : notifies >
+
+
+' ====================================================================
+'  STEP 7: PRICING — Strategy Pattern
+' ====================================================================
+interface PricingStrategy <<Strategy>> {
+    + calculateFare(pickup, dropoff, rideType) : double
+}
+
+class FlatRatePricingStrategy {
+    - FLAT_RATE : double
+    - BASE_FARE : double
+    --
+    + calculateFare(pickup, dropoff, rideType) : double
+}
+
+class VehicleBasedPricingStrategy {
+    - RATE_PER_KM : Map<RideType, Double>
+    - BASE_FARE : double
+    --
+    + calculateFare(pickup, dropoff, rideType) : double
+}
+
+note bottom of PricingStrategy #D1C4E9
+    **STEP 7 - Trip ends, fare calculated.**
+    "How much does the rider pay?
+    Could be flat rate, vehicle-based,
+    surge pricing..."
+
+    "**Strategy Pattern** again. PricingStrategy
+    is pluggable. FlatRate charges fixed price.
+    VehicleBased uses per-km rate by RideType.
+    Add SurgePricing? One new class."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+PricingStrategy <|.. FlatRatePricingStrategy
+PricingStrategy <|.. VehicleBasedPricingStrategy
+RideSharingService --> PricingStrategy : uses >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "We traced: rider requests ride -> system finds
+    nearest driver (**Strategy**) -> trip created in Requested state
+    -> driver accepts (Assigned) -> trip starts (InProgress) -> trip
+    ends (Completed) via **State Pattern** -> rider & driver notified
+    via **Observer** -> fare calculated via **Pricing Strategy**.
+    4 patterns: **Facade/Singleton**, **Strategy** (x2), **State**, **Observer**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Rider calls RideSharingService.requestRide() | Facade + Singleton | SRP, DIP |
+    | 2 | User/Rider/Driver/Vehicle/Location models | -- | SRP |
+    | 3 | System finds nearest available driver | Strategy (matching) | OCP, DIP |
+    | 4 | Trip created in REQUESTED state | -- | SRP |
+    | 5 | Requested -> Assigned -> InProgress -> Completed | State | SRP, OCP |
+    | 6 | On each state change, rider + driver notified | Observer | OCP, SRP |
+    | 7 | Trip ends, fare calculated by pricing strategy | Strategy (pricing) | OCP, DIP, LSP |
+    |  |  |  |  |
+    | **Request + Match** = Steps 1-3 | **Trip Lifecycle** = Steps 4-5 | **Notify + Pay** = Steps 6-7 |  |
+endlegend
+
+@enduml

@@ -1,0 +1,401 @@
+@startuml Chess_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Chess Game System (Annotated for Interview)</size>\n<size:11>Trace: "White player moves Pawn e2->e4. Validate: is it Pawn's valid move? Path clear? No friendly piece at destination? Execute. Switch turn."</size>
+
+
+' ====================================================================
+'  STEP 1: GAME — Orchestrator
+' ====================================================================
+class Game {
+    - player1 : Player*
+    - player2 : Player*
+    - board : Board*
+    - currentTurn : Player*
+    - status : GameStatus
+    - movesHistory : vector<Move*>
+    --
+    + Game(player1, player2)
+    + playMove(player, start, end) : bool
+    + getStatus() : GameStatus
+    + setStatus(s) : void
+    + getBoard() : Board*
+    + displayMovesHistory() : void
+    + display() : void
+    - makeMove(move, player) : bool
+}
+
+enum GameStatus {
+    IN_PROGRESS
+    BLACK_WIN
+    WHITE_WIN
+    DRAW
+    RESIGNATION
+}
+
+note top of Game #BBDEFB
+    **STEP 1 - Start here.**
+    "Game is the orchestrator. Owns two players,
+    a board, current turn, status, and move history."
+
+    "**playMove(player, start, end)** flow:
+    1. Validate it's this player's turn
+    2. Get piece at start position
+    3. Validate piece belongs to player
+    4. Call piece->isValidMove() (polymorphic!)
+    5. If valid: move piece, capture if needed
+    6. Check if King captured -> checkmate
+    7. Record move in history
+    8. Switch turn"
+
+    "GameStatus tracks: IN_PROGRESS, WHITE_WIN,
+    BLACK_WIN, DRAW, RESIGNATION."
+end note
+
+Game --> GameStatus
+
+
+' ====================================================================
+'  STEP 2: PLAYER + MOVE
+' ====================================================================
+class Player {
+    - name : string
+    - playingSide : PieceColour
+    --
+    + Player(name, playingSide)
+    + getName() : string
+    + getPlayingSide() : PieceColour
+    + toString() : string
+}
+
+class Move {
+    - player : Player*
+    - start : Cell*
+    - end : Cell*
+    - pieceMoved : Piece*
+    - pieceKilled : Piece*
+    --
+    + Move(player, start, end)
+    + getPlayer() : Player*
+    + getStart() : Cell*
+    + getEnd() : Cell*
+    + getPieceMoved() : Piece*
+    + setPieceMoved(piece) : void
+    + getPieceKilled() : Piece*
+    + setPieceKilled(piece) : void
+}
+
+enum PieceColour {
+    WHITE
+    BLACK
+}
+
+note top of Move #C8E6C9
+    **STEP 2 - Players and moves.**
+    "**Player** has name and side (WHITE/BLACK).
+    **Move** captures: who moved, from where, to
+    where, which piece, what was captured."
+
+    "Move acts as a **Memento** — records
+    complete state for history/undo.
+    movesHistory stores all moves for replay."
+    **Pattern: Memento (implicit) | SRP**
+end note
+
+Game --> Player : has 2 >
+Game *-- Move : history >
+Player --> PieceColour
+Move --> Player : by >
+Move --> Cell : from/to >
+
+
+' ====================================================================
+'  STEP 3: BOARD + CELL + POSITION
+' ====================================================================
+class Board {
+    + cells : Cell[8][8]
+    --
+    + Board()
+    + getCell(position) : Cell*
+    - initPieces() : void
+}
+
+class Cell {
+    - piece : Piece*
+    - position : Position
+    --
+    + Cell()
+    + Cell(piece, position)
+    + getPiece() : Piece*
+    + setPiece(piece) : void
+    + getPosition() : Position&
+    + equals(other) : bool
+}
+
+class Position {
+    - row : int
+    - col : int
+    --
+    + Position(row, col)
+    + getRow() : int
+    + getCol() : int
+    + isValid() : bool
+    + equals(other) : bool
+    + toString() : string
+}
+
+note top of Board #C8E6C9
+    **STEP 3 - The chessboard.**
+    "**Board** is an 8x8 array of Cells.
+    **Cell** holds a Piece (or nullptr if empty)
+    and a Position. **Position** has row + col."
+
+    "**initPieces()** sets up the standard layout:
+    Row 0: White Rook,Knight,Bishop,Queen,King...
+    Row 1: White Pawns
+    Row 6: Black Pawns
+    Row 7: Black Rook,Knight,Bishop,Queen,King..."
+
+    "Board.getCell(position) provides bounds-checked
+    access to any cell."
+    **Composition: Board -> Cell -> Piece**
+end note
+
+Board *-- Cell : 8x8 grid >
+Cell --> Position : at >
+Cell --> Piece : holds >
+Game --> Board : owns >
+
+
+' ====================================================================
+'  STEP 4: PIECE HIERARCHY — Polymorphism (KEY STEP)
+' ====================================================================
+abstract class Piece {
+    - colour : PieceColour
+    - captured : bool
+    - pieceType : PieceType
+    --
+    + Piece(colour, pieceType)
+    + getColour() : PieceColour
+    + isCaptured() : bool
+    + setCaptured(captured) : void
+    + getPieceType() : PieceType
+    + isPathClear(board, start, end) : bool
+    + {abstract} isValidMove(board, start, end) : bool
+    + toString() : string
+}
+
+class King {
+    --
+    + King(colour)
+    + isValidMove(board, start, end) : bool
+}
+
+class Queen {
+    --
+    + Queen(colour)
+    + isValidMove(board, start, end) : bool
+}
+
+class Rook {
+    --
+    + Rook(colour)
+    + isValidMove(board, start, end) : bool
+}
+
+class Bishop {
+    --
+    + Bishop(colour)
+    + isValidMove(board, start, end) : bool
+}
+
+class Knight {
+    --
+    + Knight(colour)
+    + isValidMove(board, start, end) : bool
+}
+
+class Pawn {
+    --
+    + Pawn(colour)
+    + isValidMove(board, start, end) : bool
+    - hasMovedBefore(start) : bool
+}
+
+enum PieceType {
+    KING
+    QUEEN
+    BISHOP
+    KNIGHT
+    ROOK
+    PAWN
+}
+
+note left of Piece #FFE0B2
+    **STEP 4 - Piece hierarchy. (KEY STEP)**
+    "**Polymorphism is the core design here.**
+    Abstract Piece defines isValidMove().
+    Each concrete piece overrides it with
+    its own movement rules."
+
+    "**King**: 1 step in any direction.
+    **Queen**: any direction, any distance,
+      path must be clear.
+    **Rook**: horizontal or vertical only,
+      path must be clear.
+    **Bishop**: diagonal only, path clear.
+    **Knight**: L-shape (2+1), CAN jump.
+    **Pawn**: forward 1 (or 2 first time),
+      diagonal capture only."
+
+    "**isPathClear()**: shared by Queen, Rook,
+    Bishop. Iterates from start to end,
+    checks no piece blocks the path.
+    Knight skips this (it jumps)."
+
+    "Game.makeMove() calls piece->isValidMove()
+    — polymorphic dispatch. Game never knows
+    which piece type it's dealing with."
+    **Pattern: Polymorphism + Template Method**
+    **SOLID: OCP, LSP**
+end note
+
+Piece <|-- King
+Piece <|-- Queen
+Piece <|-- Rook
+Piece <|-- Bishop
+Piece <|-- Knight
+Piece <|-- Pawn
+Piece --> PieceColour
+Piece --> PieceType
+
+
+' ====================================================================
+'  STEP 5: MOVE VALIDATION + GAME FLOW
+' ====================================================================
+note as VALIDATION #FFCDD2
+    **STEP 5 - Move validation flow. (KEY)**
+    "Game.makeMove(move, player):"
+
+    "1. Get piece at start cell
+       piece = start->getPiece()
+       if nullptr -> invalid (no piece there)"
+
+    "2. Check ownership:
+       if piece->getColour() != player->getPlayingSide()
+       -> invalid (not your piece!)"
+
+    "3. **Polymorphic validation:**
+       if !piece->isValidMove(board, start, end)
+       -> invalid (piece can't move that way)"
+
+    "4. Check destination:
+       endPiece = end->getPiece()
+       if endPiece && same colour -> invalid
+       (can't capture your own piece)"
+
+    "5. Execute move:
+       end->setPiece(piece)
+       start->setPiece(nullptr)"
+
+    "6. Detect checkmate:
+       if endPiece is a King (dynamic_cast)
+       -> game over! Set winner."
+
+    "7. Record: movesHistory.push_back(move)"
+    "8. Switch turn: currentTurn = other player"
+end note
+
+
+' ====================================================================
+'  STEP 6: PIECE MOVEMENT RULES
+' ====================================================================
+note as RULES #FFE0B2
+    **STEP 6 - Piece movement rules (reference).**
+
+    "**King**:   rowDiff<=1 && colDiff<=1
+              (1 step any direction)"
+
+    "**Queen**:  rowDiff==0 || colDiff==0 ||
+              rowDiff==colDiff
+              (straight or diagonal, path clear)"
+
+    "**Rook**:   rowDiff==0 || colDiff==0
+              (straight only, path clear)"
+
+    "**Bishop**: rowDiff == colDiff
+              (diagonal only, path clear)"
+
+    "**Knight**: (rowDiff==2 && colDiff==1) ||
+              (rowDiff==1 && colDiff==2)
+              (L-shape, can jump over pieces)"
+
+    "**Pawn**:   Forward 1 step (or 2 if first move).
+              Capture diagonally only.
+              Direction: WHITE +1 row, BLACK -1 row.
+              hasMovedBefore() checks starting row."
+end note
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "White plays e2->e4 (Pawn). Game calls
+    pawn->isValidMove(): is it forward 2? First move? Path clear?
+    Destination empty? YES -> move pawn. Black plays e7->e5.
+    White plays Bishop f1->c4. Game calls bishop->isValidMove():
+    is it diagonal? rowDiff==colDiff? Path clear? YES. Eventually
+    a King is captured -> checkmate -> game over."
+
+    "**The entire design is built on one concept: polymorphism.**
+    Game never checks 'if piece is King then...' — it just calls
+    piece->isValidMove() and each piece type handles its own rules."
+
+    "Patterns: **Polymorphism** (piece hierarchy + isValidMove),
+    **Template Method** (common validation structure, piece-specific rules),
+    **Composition** (Game->Board->Cell->Piece), **Memento** (Move history)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | Game: playMove(), validate, execute, switch turn | Orchestrator | Manages turn + status + history |
+    | 2 | Player (WHITE/BLACK), Move (from, to, piece, capture) | Memento | Move records state for replay |
+    | 3 | Board 8x8 Cells, Cell holds Piece at Position | Composition | Board -> Cell -> Piece |
+    | 4 | Piece abstract, 6 concrete: King/Queen/Rook/Bishop/Knight/Pawn | Polymorphism | isValidMove() per piece type |
+    | 5 | makeMove: validate ownership -> polymorphic move check -> execute | Template Method | Game never knows piece type |
+    | 6 | Movement rules: King(1), Queen(any), Rook(straight), Bishop(diag), Knight(L), Pawn(fwd) | -- | Each piece encapsulates rules |
+    |  |  |  |  |
+    | **Core insight**: Game calls piece->isValidMove() polymorphically. Never checks piece type. OCP + LSP. |  |  |
+endlegend
+
+@enduml

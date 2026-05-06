@@ -1,0 +1,575 @@
+@startuml MeetingScheduler_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Meeting Scheduler System (Annotated for Interview)</size>\n<size:11>Trace: "Alice wants to schedule 1hr meeting with Bob, Charlie. System finds 3 common free slots, picks best one, sends invites."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class MeetingScheduler <<Facade>> {
+    - calendarService : CalendarService
+    - slotFinder : SlotFinder
+    - notificationService : NotificationService
+    - meetingRepository : MeetingRepository
+    --
+    + scheduleMeeting(request) : Meeting
+    + findAvailableSlots(participants, duration, range) : List<TimeSlot>
+    + cancelMeeting(meetingId) : void
+    + rescheduleMeeting(meetingId, newSlot) : Meeting
+    + respondToInvite(meetingId, userId, response) : void
+    + getMeetingsForUser(userId, date) : List<Meeting>
+}
+
+note top of MeetingScheduler #BBDEFB
+    **STEP 1 - Start here.**
+    "Alice wants a 1hr meeting with Bob and Charlie
+    sometime this week. Client calls
+    findAvailableSlots(participants, 60min, thisWeek)
+    -> gets 3 possible slots -> picks one ->
+    scheduleMeeting(request) -> invites sent."
+
+    "**Facade** hides: calendar lookups, slot finding
+    algorithms, conflict detection, and notifications."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: PARTICIPANT + CALENDAR
+' ====================================================================
+class Participant {
+    - userId : String
+    - name : String
+    - email : String
+    - calendar : Calendar
+    - timezone : String
+    - workingHours : WorkingHours
+    --
+    + getCalendar() : Calendar
+    + getWorkingHours() : WorkingHours
+    + isAvailable(slot) : bool
+}
+
+class Calendar {
+    - ownerId : String
+    - events : List<CalendarEvent>
+    --
+    + addEvent(event) : void
+    + removeEvent(eventId) : void
+    + getEvents(date) : List<CalendarEvent>
+    + getEvents(from, to) : List<CalendarEvent>
+    + getFreeBusy(from, to) : List<FreeBusyBlock>
+}
+
+class CalendarEvent {
+    - eventId : String
+    - title : String
+    - startTime : LocalDateTime
+    - endTime : LocalDateTime
+    - isAllDay : bool
+    - recurrence : RecurrenceRule
+    - status : EventStatus
+    --
+    + getTimeSlot() : TimeSlot
+    + overlaps(slot) : bool
+    + getDurationMinutes() : int
+}
+
+class WorkingHours {
+    - startTime : LocalTime
+    - endTime : LocalTime
+    - workingDays : Set<DayOfWeek>
+    --
+    + isWorkingTime(dateTime) : bool
+    + getWorkingSlot(date) : TimeSlot
+}
+
+enum EventStatus {
+    CONFIRMED
+    TENTATIVE
+    CANCELLED
+    OUT_OF_OFFICE
+}
+
+note top of Participant #C8E6C9
+    **STEP 2 - Who is being scheduled?**
+    "Each **Participant** has a **Calendar** with
+    CalendarEvents and **WorkingHours**."
+
+    "**Calendar.getFreeBusy(from, to):**
+    Returns blocks of busy time in a range.
+    This is the raw data the slot finder uses."
+
+    "**WorkingHours**: 9am-6pm, Mon-Fri.
+    Don't schedule meetings at 11pm or Sunday."
+
+    "**CalendarEvent**: existing meetings with
+    start/end times. overlaps(slot) checks if
+    a proposed slot conflicts."
+end note
+
+Participant *-- Calendar : owns >
+Participant --> WorkingHours
+Calendar *-- CalendarEvent : contains >
+CalendarEvent --> EventStatus
+
+
+' ====================================================================
+'  STEP 3: TIME MODELS
+' ====================================================================
+class TimeSlot {
+    - startTime : LocalDateTime
+    - endTime : LocalDateTime
+    --
+    + TimeSlot(start, end)
+    + getDurationMinutes() : int
+    + overlaps(other) : bool
+    + contains(time) : bool
+    + isWithin(range) : bool
+}
+
+class DateRange {
+    - from : LocalDate
+    - to : LocalDate
+    --
+    + contains(date) : bool
+    + getDays() : List<LocalDate>
+}
+
+class FreeBusyBlock {
+    - startTime : LocalDateTime
+    - endTime : LocalDateTime
+    - status : BusyStatus
+    --
+    + overlaps(slot) : bool
+}
+
+enum BusyStatus {
+    BUSY
+    TENTATIVE
+    OUT_OF_OFFICE
+    FREE
+}
+
+class RecurrenceRule {
+    - type : RecurrenceType
+    - interval : int
+    - endDate : LocalDate
+    - daysOfWeek : Set<DayOfWeek>
+    --
+    + getNextOccurrence(from) : LocalDate
+    + getOccurrences(from, to) : List<LocalDate>
+}
+
+enum RecurrenceType {
+    NONE
+    DAILY
+    WEEKLY
+    BIWEEKLY
+    MONTHLY
+}
+
+note top of TimeSlot #C8E6C9
+    **STEP 3 - Time models.**
+    "**TimeSlot**: start + end time. The core unit.
+    overlaps() checks conflict between two slots."
+
+    "**FreeBusyBlock**: a chunk of busy time
+    with status (BUSY vs TENTATIVE vs OOO).
+    Calendar returns these for slot finding."
+
+    "**RecurrenceRule**: daily standup = WEEKLY
+    on Mon-Fri. Generates all occurrences in
+    a date range."
+end note
+
+CalendarEvent --> RecurrenceRule
+RecurrenceRule --> RecurrenceType
+FreeBusyBlock --> BusyStatus
+
+
+' ====================================================================
+'  STEP 4: CALENDAR SERVICE — Aggregates Free/Busy
+' ====================================================================
+class CalendarService {
+    - calendars : Map<String, Calendar>
+    --
+    + getCalendar(userId) : Calendar
+    + getFreeBusy(userId, from, to) : List<FreeBusyBlock>
+    + getFreeBusyBulk(userIds, from, to) : Map<String, List<FreeBusyBlock>>
+    + addEvent(userId, event) : void
+    + removeEvent(userId, eventId) : void
+}
+
+note top of CalendarService #C8E6C9
+    **STEP 4 - Aggregate calendars.**
+    "**getFreeBusyBulk()** is the key method.
+    Given [Alice, Bob, Charlie] and a date range,
+    returns each person's busy blocks."
+
+    "This is what the SlotFinder consumes:
+    Alice busy: 9-10am, 2-3pm
+    Bob busy: 10-11am, 3-4pm
+    Charlie busy: 9-11am
+    -> find gaps where ALL are free."
+end note
+
+MeetingScheduler --> CalendarService
+CalendarService o--> Calendar : manages >
+
+
+' ====================================================================
+'  STEP 5: SLOT FINDER — The Core Algorithm (KEY STEP)
+' ====================================================================
+class SlotFinder {
+    - strategy : SlotFindingStrategy
+    --
+    + findSlots(participants, duration, range) : List<TimeSlot>
+    + setStrategy(strategy) : void
+}
+
+interface SlotFindingStrategy <<Strategy>> {
+    + findAvailableSlots(freeBusyMap, duration, range, workingHours) : List<TimeSlot>
+}
+
+class IntervalMergeStrategy {
+    --
+    + findAvailableSlots(freeBusyMap, duration, range, workingHours) : List<TimeSlot>
+}
+
+class SweepLineStrategy {
+    --
+    + findAvailableSlots(freeBusyMap, duration, range, workingHours) : List<TimeSlot>
+}
+
+class BruteForceStrategy {
+    - slotGranularityMinutes : int
+    --
+    + findAvailableSlots(freeBusyMap, duration, range, workingHours) : List<TimeSlot>
+}
+
+note top of SlotFindingStrategy #FFE0B2
+    **STEP 5 - Find common free slots. (KEY STEP)**
+    "Given N people's busy times, find slots where
+    ALL are free. **Strategy Pattern** — algorithm
+    is pluggable."
+
+    "**IntervalMergeStrategy** (optimal):
+    1. Collect ALL busy intervals from ALL participants
+    2. Sort by start time
+    3. Merge overlapping intervals
+    4. Gaps between merged intervals = free slots
+    5. Filter: >= required duration, within working hours
+    O(N log N) where N = total busy blocks."
+
+    "**SweepLineStrategy** (event-based):
+    1. Create events: +1 at each busy start, -1 at end
+    2. Sweep left to right
+    3. When count == 0, everyone is free
+    4. Track free window duration."
+
+    "**BruteForceStrategy** (simple):
+    Check every 15-min slot in the range.
+    For each: is everyone free? O(slots * participants)."
+
+    "**This is the interview differentiator.**
+    Discuss IntervalMerge vs SweepLine tradeoffs."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+SlotFindingStrategy <|.. IntervalMergeStrategy
+SlotFindingStrategy <|.. SweepLineStrategy
+SlotFindingStrategy <|.. BruteForceStrategy
+SlotFinder --> SlotFindingStrategy : delegates >
+MeetingScheduler --> SlotFinder
+
+
+' ====================================================================
+'  STEP 6: SLOT RANKING — Which slot is "best"?
+' ====================================================================
+interface SlotRankingStrategy <<Strategy>> {
+    + rank(slots, participants) : List<TimeSlot>
+}
+
+class EarliestFirstRanking {
+    --
+    + rank(slots, participants) : List<TimeSlot>
+}
+
+class PreferredTimeRanking {
+    --
+    + rank(slots, participants) : List<TimeSlot>
+}
+
+class MinFragmentationRanking {
+    --
+    + rank(slots, participants) : List<TimeSlot>
+}
+
+class LeastDisruptionRanking {
+    --
+    + rank(slots, participants) : List<TimeSlot>
+}
+
+note bottom of SlotRankingStrategy #FFE0B2
+    **STEP 6 - Rank the found slots.**
+    "SlotFinder found 5 possible slots.
+    Which one is 'best'?"
+
+    "**Strategy Pattern** — ranking is pluggable.
+    **EarliestFirst**: soonest available (default).
+    **PreferredTime**: prefer 10-11am if possible.
+    **MinFragmentation**: don't create tiny gaps
+    between meetings. Pick slot that preserves
+    large free blocks.
+    **LeastDisruption**: fewest people have to
+    reschedule tentative events."
+    **Pattern: Strategy | OCP**
+end note
+
+SlotRankingStrategy <|.. EarliestFirstRanking
+SlotRankingStrategy <|.. PreferredTimeRanking
+SlotRankingStrategy <|.. MinFragmentationRanking
+SlotRankingStrategy <|.. LeastDisruptionRanking
+SlotFinder --> SlotRankingStrategy : ranks with >
+
+
+' ====================================================================
+'  STEP 7: MEETING + SCHEDULING REQUEST
+' ====================================================================
+class SchedulingRequest {
+    - organizer : Participant
+    - participants : List<Participant>
+    - durationMinutes : int
+    - dateRange : DateRange
+    - title : String
+    - priority : MeetingPriority
+    - preferredSlot : TimeSlot
+    - recurrence : RecurrenceRule
+    - isOptionalParticipants : Set<String>
+}
+
+class Meeting {
+    - meetingId : String
+    - title : String
+    - organizer : Participant
+    - participants : List<Participant>
+    - timeSlot : TimeSlot
+    - status : MeetingStatus
+    - responses : Map<String, InviteResponse>
+    - recurrence : RecurrenceRule
+    - createdAt : LocalDateTime
+    - observers : List<MeetingObserver>
+    --
+    + confirm() : void
+    + cancel() : void
+    + reschedule(newSlot) : void
+    + respond(userId, response) : void
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+}
+
+enum MeetingStatus {
+    SCHEDULED
+    CONFIRMED
+    CANCELLED
+    RESCHEDULED
+}
+
+enum InviteResponse {
+    ACCEPTED
+    DECLINED
+    TENTATIVE
+    NO_RESPONSE
+}
+
+enum MeetingPriority {
+    LOW
+    NORMAL
+    HIGH
+    MANDATORY
+}
+
+class MeetingRepository {
+    - meetings : Map<String, Meeting>
+    --
+    + save(meeting) : void
+    + findById(meetingId) : Meeting
+    + findByUser(userId, date) : List<Meeting>
+    + remove(meetingId) : void
+}
+
+note top of Meeting #FFCDD2
+    **STEP 7 - The scheduled meeting.**
+    "**SchedulingRequest**: organizer wants 60min
+    meeting with [Bob, Charlie], this week,
+    titled 'Sprint Planning', optional: [Dave]."
+
+    "**Meeting**: created after slot is confirmed.
+    Tracks responses per participant:
+    Bob=ACCEPTED, Charlie=TENTATIVE, Dave=DECLINED.
+    Status: SCHEDULED -> CONFIRMED (all accepted)
+    or CANCELLED or RESCHEDULED."
+
+    "Supports recurrence: 'every Monday 10am'
+    creates multiple CalendarEvents."
+end note
+
+SchedulingRequest --> Participant : organizer + participants >
+SchedulingRequest --> DateRange
+SchedulingRequest --> MeetingPriority
+SchedulingRequest --> RecurrenceRule
+Meeting --> Participant : attendees >
+Meeting --> TimeSlot : at >
+Meeting --> MeetingStatus
+Meeting --> InviteResponse : per user >
+Meeting --> RecurrenceRule
+MeetingRepository o--> Meeting : stores >
+MeetingScheduler --> MeetingRepository
+
+
+' ====================================================================
+'  STEP 8: OBSERVER — Notifications
+' ====================================================================
+interface MeetingObserver <<Observer>> {
+    + onMeetingEvent(meeting, event) : void
+}
+
+class InviteNotifier {
+    + onMeetingEvent(meeting, event) : void
+}
+
+class CalendarSyncObserver {
+    - calendarService : CalendarService
+    --
+    + onMeetingEvent(meeting, event) : void
+}
+
+class ReminderObserver {
+    - reminderMinutesBefore : int
+    --
+    + onMeetingEvent(meeting, event) : void
+}
+
+class ConflictDetectorObserver {
+    --
+    + onMeetingEvent(meeting, event) : void
+}
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(user, message) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class EmailNotification {
+    + send(recipient, message) : void
+}
+
+class PushNotification {
+    + send(recipient, message) : void
+}
+
+class TeamsNotification {
+    + send(recipient, message) : void
+}
+
+note bottom of MeetingObserver #B2EBF2
+    **STEP 8 - Notify everyone.**
+    "On meeting create/cancel/reschedule,
+    Meeting calls notifyObservers().
+    **Observer Pattern**:"
+
+    "**InviteNotifier**: sends invite emails/push
+    to all participants.
+    **CalendarSyncObserver**: adds CalendarEvent
+    to each participant's Calendar.
+    **ReminderObserver**: schedules '15 min before'
+    reminder notification.
+    **ConflictDetector**: warns if new meeting
+    conflicts with tentative events."
+
+    "Notification via **Strategy**: Email, Push, Teams."
+    **Patterns: Observer + Strategy | OCP, SRP**
+end note
+
+MeetingObserver <|.. InviteNotifier
+MeetingObserver <|.. CalendarSyncObserver
+MeetingObserver <|.. ReminderObserver
+MeetingObserver <|.. ConflictDetectorObserver
+Meeting --> MeetingObserver : notifies >
+NotificationStrategy <|.. EmailNotification
+NotificationStrategy <|.. PushNotification
+NotificationStrategy <|.. TeamsNotification
+NotificationService --> NotificationStrategy
+InviteNotifier --> NotificationService : uses >
+CalendarSyncObserver --> CalendarService : syncs >
+MeetingScheduler --> NotificationService
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Alice wants 1hr meeting with Bob, Charlie this week.
+    CalendarService fetches all 3 calendars' free/busy data.
+    **SlotFinder** runs **IntervalMergeStrategy**: merge all busy blocks,
+    find gaps >= 60 min within working hours. Returns 5 slots.
+    **SlotRankingStrategy** picks earliest. Meeting created.
+    **Observer** chain: InviteNotifier sends invites, CalendarSync adds
+    event to all calendars, Reminder scheduled for 15 min before."
+
+    "5 patterns: **Facade**, **Strategy** (x3: slot finding, slot ranking,
+    notification), **Observer** (invite, calendar sync, reminder, conflict).
+    The interview differentiator: **IntervalMerge algorithm** in Step 5."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Alice calls MeetingScheduler.findAvailableSlots() | Facade | SRP, DIP |
+    | 2 | Participant has Calendar with events + WorkingHours | Composition | SRP |
+    | 3 | TimeSlot, FreeBusyBlock, RecurrenceRule models | -- | SRP |
+    | 4 | CalendarService.getFreeBusyBulk() aggregates all calendars | Service | SRP |
+    | 5 | IntervalMerge / SweepLine / BruteForce find common free slots | Strategy (finding) | OCP, DIP |
+    | 6 | EarliestFirst / PreferredTime / MinFragmentation ranking | Strategy (ranking) | OCP |
+    | 7 | Meeting created with responses per participant + recurrence | -- | SRP |
+    | 8 | Invite, calendar sync, reminder, conflict detection notified | Observer + Strategy | OCP, SRP |
+    |  |  |  |  |
+    | **Find Slots** = Steps 4-6 (the core algorithm) | **Schedule** = Step 7 | **Notify** = Step 8 |  |
+endlegend
+
+@enduml

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth status 2>&1)",
+      "Bash(gh auth login --web -p https 2>&1)",
+      "Bash(cd \"C:/Users/sasachdeva/Desktop/Design\" && git init && git add -A && git status)"
+    ]
+  }
+}

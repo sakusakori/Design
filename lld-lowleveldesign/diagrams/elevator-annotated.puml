@@ -1,0 +1,331 @@
+@startuml ElevatorSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Elevator System (Annotated for Interview)</size>\n<size:11>Trace: "Person on Floor 3 presses UP. Scheduler picks nearest elevator. Elevator moves to Floor 3, opens door, person presses Floor 7 inside."</size>
+
+
+' ====================================================================
+'  STEP 1: BUILDING + FLOORS
+' ====================================================================
+class Building {
+    - floors : vector<Floor*>
+    --
+    + Building(totalFloors, dispatcher)
+    + ~Building()
+    + getFloor(floor) : Floor*
+}
+
+class Floor {
+    - floorNumber : int
+    - upButton : ExternalButton
+    - downButton : ExternalButton
+    --
+    + Floor(floorNumber, dispatcher)
+    + pressUpButton() : void
+    + pressDownButton() : void
+}
+
+note top of Building #BBDEFB
+    **STEP 1 - Start here.**
+    "A Building has N Floors. Each Floor has
+    two **ExternalButtons**: UP and DOWN.
+    Person on Floor 3 presses UP button.
+    That triggers the external request flow."
+    **Composition: Building -> Floors -> Buttons**
+end note
+
+Building *-- Floor : has floors >
+
+
+' ====================================================================
+'  STEP 2: EXTERNAL REQUEST FLOW
+' ====================================================================
+class ExternalButton {
+    - dispatcher : ExternalDispatcher*
+    --
+    + ExternalButton(dispatcher)
+    + pressButton(floor, direction) : void
+}
+
+class ExternalDispatcher <<Facade>> {
+    + scheduler : ElevatorScheduler*
+    --
+    + ExternalDispatcher(scheduler)
+    + submitExternalRequest(floor, direction) : void
+}
+
+note top of ExternalDispatcher #C8E6C9
+    **STEP 2 - External request flow.**
+    "Person presses UP on Floor 3.
+    ExternalButton delegates to
+    **ExternalDispatcher** (Facade).
+    Dispatcher delegates to ElevatorScheduler
+    to pick the best elevator."
+
+    "Flow: Button -> Dispatcher -> Scheduler
+    -> Strategy -> Controller -> ElevatorCar"
+end note
+
+Floor *-- ExternalButton : has up/down buttons >
+ExternalButton --> ExternalDispatcher : delegates >
+ExternalDispatcher --> ElevatorScheduler : schedules via >
+
+
+' ====================================================================
+'  STEP 3: ELEVATOR SELECTION — Strategy Pattern (KEY)
+' ====================================================================
+class ElevatorScheduler {
+    - controllers : vector<ElevatorController*>
+    - strategy : ElevatorSelectionStrategy*
+    --
+    + ElevatorScheduler(controllers, strategy)
+    + setStrategy(strategy) : void
+    + assignElevator(floor, direction) : ElevatorController*
+}
+
+abstract class ElevatorSelectionStrategy <<Strategy>> {
+    --
+    + {abstract} selectElevator(controllers, requestFloor, direction) : ElevatorController*
+}
+
+class NearestElevatorStrategy {
+    --
+    + selectElevator(controllers, requestFloor, direction) : ElevatorController*
+}
+
+class LeastBusyStrategy {
+    --
+    + selectElevator(controllers, requestFloor, direction) : ElevatorController*
+}
+
+note top of ElevatorSelectionStrategy #FFE0B2
+    **STEP 3 - Which elevator? (KEY STEP)**
+    "Multiple elevators. Which one should serve
+    Floor 3 UP? **Strategy Pattern:**"
+
+    "**NearestElevatorStrategy** (multi-level logic):
+    1. Prefer elevator going same direction AND
+       hasn't passed the floor (e.g., Elev 1 at
+       Floor 1 going UP = distance 2).
+    2. Fallback: pick idle elevator.
+    3. Final fallback: pick first available."
+
+    "**LeastBusyStrategy**:
+    Total load = upQueue.size + downQueue.size.
+    Pick elevator with minimum load."
+
+    "setStrategy() swaps at runtime.
+    Add ZoneBasedStrategy? One new class."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+ElevatorSelectionStrategy <|-- NearestElevatorStrategy
+ElevatorSelectionStrategy <|-- LeastBusyStrategy
+ElevatorScheduler --> ElevatorSelectionStrategy : delegates >
+ElevatorScheduler o--> ElevatorController : manages >
+
+
+' ====================================================================
+'  STEP 4: ELEVATOR CONTROLLER — Thread-Safe Queues (KEY)
+' ====================================================================
+class ElevatorController {
+    - upMinPQ : priority_queue<int, greater>
+    - downMaxPQ : priority_queue<int>
+    - elevatorCar : ElevatorCar*
+    - mtx : mutex
+    - cv : condition_variable
+    --
+    + ElevatorController(elevatorCar)
+    + submitRequest(destinationFloor) : void
+    + getUpQueueSize() : int
+    + getDownQueueSize() : int
+    + run() : void
+    + controlElevator() : void
+    - enqueueRequest(destinationFloor) : void
+}
+
+note top of ElevatorController #FFCDD2
+    **STEP 4 - The brain. (KEY STEP)**
+    "Each elevator has its own ElevatorController
+    running in a **separate thread**."
+
+    "**Two priority queues** (SCAN algorithm):
+    **upMinPQ** (min-heap): floors to visit going UP.
+       [3, 5, 7] -> visit 3 first, then 5, then 7.
+    **downMaxPQ** (max-heap): floors going DOWN.
+       [8, 5, 2] -> visit 8 first, then 5, then 2."
+
+    "**Thread-safe** with mutex + condition_variable:
+    submitRequest() locks, enqueues, notifies CV.
+    controlElevator() waits on CV when idle,
+    wakes up when request arrives."
+
+    "This is the SCAN/Elevator Algorithm."
+    **Patterns: Producer-Consumer, SCAN Algorithm**
+end note
+
+ElevatorController --> ElevatorCar : controls >
+
+
+' ====================================================================
+'  STEP 5: ELEVATOR CAR + DOOR
+' ====================================================================
+class ElevatorCar {
+    - id : int
+    - currentFloor : int
+    - nextFloorStoppage : int
+    - movingDirection : ElevatorDirection
+    - door : Door
+    --
+    + ElevatorCar(id)
+    + showDisplay() : void
+    + moveElevator(destinationFloor) : void
+    + setCurrentFloor(floor) : void
+}
+
+class Door {
+    - doorState : DoorState
+    --
+    + Door()
+    + openDoor(id) : void
+    + closeDoor(id) : void
+}
+
+enum ElevatorDirection {
+    UP
+    DOWN
+    IDLE
+}
+
+enum DoorState {
+    DOOR_OPEN
+    DOOR_CLOSED
+}
+
+note top of ElevatorCar #C8E6C9
+    **STEP 5 - The physical elevator.**
+    "**ElevatorCar** has: id, currentFloor,
+    direction (UP/DOWN/IDLE), and a Door."
+
+    "**moveElevator(destinationFloor)**:
+    1. Close door
+    2. Update direction (UP or DOWN)
+    3. Move floor by floor to destination
+    4. Arrive: update currentFloor
+    5. Open door (passengers enter/exit)
+    6. Close door"
+
+    "**Door** has simple state: OPEN/CLOSED.
+    openDoor() and closeDoor() with logging."
+end note
+
+ElevatorCar *-- Door : has >
+ElevatorCar --> ElevatorDirection
+
+
+' ====================================================================
+'  STEP 6: INTERNAL REQUEST FLOW — Singleton
+' ====================================================================
+class InternalButton {
+    - controller : ElevatorController*
+    --
+    + InternalButton(controller)
+    + pressButton(destinationFloor) : void
+}
+
+class InternalDispatcher <<Singleton>> {
+    - InternalDispatcher()
+    --
+    + {static} getInstance() : InternalDispatcher&
+    + submitInternalRequest(floor, controller) : void
+}
+
+note top of InternalDispatcher #D1C4E9
+    **STEP 6 - Inside the elevator.**
+    "Person enters elevator, presses Floor 7.
+    **InternalButton** delegates to
+    **InternalDispatcher** (Singleton) which
+    submits request directly to that
+    elevator's controller."
+
+    "**Singleton** because all internal buttons
+    across all elevators use the same dispatcher.
+    Single point of contact for internal requests."
+
+    "Internal vs External:
+    External: 'I need AN elevator at Floor 3'
+    Internal: 'THIS elevator, go to Floor 7'"
+    **Pattern: Singleton | SRP**
+end note
+
+InternalButton --> InternalDispatcher : delegates >
+InternalDispatcher --> ElevatorController : submits to >
+
+
+' ====================================================================
+'  CONNECTIONS
+' ====================================================================
+Building --> ExternalDispatcher : wired to >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Person on Floor 3 presses UP -> ExternalButton ->
+    ExternalDispatcher -> ElevatorScheduler uses **Strategy** (Nearest
+    or LeastBusy) to pick best elevator -> ElevatorController receives
+    request in thread-safe priority queue -> Controller's thread wakes
+    up, processes SCAN algorithm (min-heap UP, max-heap DOWN) ->
+    ElevatorCar moves to Floor 3, opens Door -> Person enters, presses
+    Floor 7 via InternalButton -> **Singleton** InternalDispatcher ->
+    same Controller enqueues Floor 7 -> car moves to Floor 7."
+
+    "Key patterns: **Strategy** (elevator selection), **Singleton**
+    (InternalDispatcher), **Facade** (ExternalDispatcher),
+    **Composition** (Building->Floor->Button), **SCAN Algorithm**
+    (dual priority queues), **Thread-per-Elevator** (mutex + CV)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | Building has Floors, each Floor has UP/DOWN ExternalButtons | Composition | Physical hierarchy |
+    | 2 | Button -> ExternalDispatcher -> ElevatorScheduler | Facade | External request flow |
+    | 3 | Scheduler picks best elevator: Nearest or LeastBusy | Strategy | Pluggable selection algorithm |
+    | 4 | Controller enqueues in min-heap (UP) / max-heap (DOWN) | SCAN Algorithm | Thread-safe with mutex + CV |
+    | 5 | ElevatorCar moves floor-by-floor, opens/closes Door | Composition | Physical elevator + door |
+    | 6 | Inside elevator: InternalButton -> Singleton Dispatcher -> Controller | Singleton | Internal request flow |
+    |  |  |  |  |
+    | **External Flow** = Steps 1-3 (floor button -> scheduler -> controller) | **Internal Flow** = Step 6 (car button -> dispatcher -> controller) | **Movement** = Steps 4-5 (SCAN + car) |  |
+endlegend
+
+@enduml

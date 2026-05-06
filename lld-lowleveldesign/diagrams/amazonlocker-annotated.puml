@@ -1,0 +1,392 @@
+@startuml AmazonLockerService_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Amazon Locker Service - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Customer orders a package, carrier delivers to locker, customer gets OTP, picks up package."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — LockerService
+' ====================================================================
+class LockerService <<Singleton>> {
+    - {static} instance : LockerService
+    - lockerLocations : Map<String, LockerLocation>
+    - packages : Map<String, Package>
+    - notificationService : NotificationService
+    - otpService : OTPService
+    --
+    + {static} getInstance() : LockerService
+    + findAvailableLocker(location, size) : Locker
+    + deliverPackage(pkg, lockerId) : DeliveryResult
+    + pickupPackage(lockerId, otp) : Package
+    + returnPackage(pkg, lockerId) : DeliveryResult
+    + getLockerStatus(lockerId) : LockerState
+}
+
+note top of LockerService #BBDEFB
+    **STEP 1 - Start here.**
+    "The entry point. Carrier calls deliverPackage(),
+    customer calls pickupPackage(). This **Facade**
+    coordinates locker allocation, OTP generation,
+    notifications, and state management.
+    Also a **Singleton** — one service instance."
+    **Patterns: Facade + Singleton | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CORE MODELS — Package, Customer, Order
+' ====================================================================
+class Package {
+    - packageId : String
+    - orderId : String
+    - size : PackageSize
+    - customer : Customer
+    - assignedLocker : Locker
+    - status : PackageStatus
+    - deliveryOtp : String
+    - otpExpiry : LocalDateTime
+    --
+    + getSize() : PackageSize
+    + isOtpValid(otp) : boolean
+    + isOtpExpired() : boolean
+}
+
+class Customer {
+    - customerId : String
+    - name : String
+    - email : String
+    - phone : String
+    --
+    + getEmail() : String
+    + getPhone() : String
+}
+
+class Order {
+    - orderId : String
+    - customer : Customer
+    - packages : List<Package>
+    - orderDate : LocalDateTime
+}
+
+enum PackageSize {
+    SMALL
+    MEDIUM
+    LARGE
+    EXTRA_LARGE
+}
+
+enum PackageStatus {
+    CREATED
+    IN_TRANSIT
+    DELIVERED_TO_LOCKER
+    PICKED_UP
+    RETURNED
+    EXPIRED
+}
+
+note top of Package #C8E6C9
+    **STEP 2 - Core models.**
+    "**Package** is the central entity — has size,
+    assigned locker, OTP, and status.
+    **Customer** receives notifications.
+    **PackageSize** must match LockerSize.
+    **PackageStatus** tracks the lifecycle."
+end note
+
+Order *-- Package : contains >
+Order --> Customer : for >
+Package --> Customer : belongs to >
+Package --> PackageSize : sized as >
+Package --> PackageStatus : tracks >
+
+
+' ====================================================================
+'  STEP 3: LOCKER HIERARCHY — Location, Locker, LockerSize
+' ====================================================================
+class LockerLocation {
+    - locationId : String
+    - address : String
+    - latitude : double
+    - longitude : double
+    - lockers : List<Locker>
+    --
+    + getAvailableLockers(size) : List<Locker>
+    + findNearestLocation(lat, lng) : LockerLocation
+}
+
+class Locker {
+    - lockerId : String
+    - size : LockerSize
+    - state : LockerState
+    - currentPackage : Package
+    - location : LockerLocation
+    --
+    + isAvailable() : boolean
+    + storePackage(pkg) : void
+    + retrievePackage() : Package
+    + openDoor() : void
+    + closeDoor() : void
+    + getState() : LockerState
+    + setState(state) : void
+}
+
+enum LockerSize {
+    SMALL
+    MEDIUM
+    LARGE
+    EXTRA_LARGE
+}
+
+note top of Locker #C8E6C9
+    **STEP 3 - Locker structure.**
+    "**LockerLocation** is a physical kiosk
+    with many lockers. Each **Locker** has
+    a size, a state, and holds one package.
+    Key rule: locker size >= package size.
+    Locker delegates behavior to its
+    current **LockerState** (Step 4)."
+end note
+
+LockerLocation *-- Locker : contains >
+Locker --> LockerSize : sized as >
+Locker --> Package : holds >
+LockerService --> LockerLocation : manages >
+
+
+' ====================================================================
+'  STEP 4: STATE PATTERN — Locker Lifecycle
+' ====================================================================
+interface LockerState <<State>> {
+    + storePackage(locker, pkg) : void
+    + retrievePackage(locker, otp) : Package
+    + reportMalfunction(locker) : void
+}
+
+class AvailableState {
+    + storePackage(locker, pkg) : void
+    + retrievePackage(locker, otp) : Package
+    + reportMalfunction(locker) : void
+}
+
+class OccupiedState {
+    + storePackage(locker, pkg) : void
+    + retrievePackage(locker, otp) : Package
+    + reportMalfunction(locker) : void
+}
+
+class ExpiredState {
+    + storePackage(locker, pkg) : void
+    + retrievePackage(locker, otp) : Package
+    + reportMalfunction(locker) : void
+}
+
+class OutOfServiceState {
+    + storePackage(locker, pkg) : void
+    + retrievePackage(locker, otp) : Package
+    + reportMalfunction(locker) : void
+}
+
+note bottom of LockerState #FFCDD2
+    **STEP 4 - Locker state transitions.**
+    "Without this, Locker has if-else chains.
+    **State Pattern** — each state is a class."
+
+    "**AvailableState**: can store package.
+    **OccupiedState**: can retrieve (with OTP).
+    **ExpiredState**: OTP expired, return to warehouse.
+    **OutOfServiceState**: broken, skip allocation."
+
+    Available -> Occupied (package stored)
+    Occupied -> Available (package picked up)
+    Occupied -> Expired (OTP timeout)
+    Any -> OutOfService (malfunction)
+    **Pattern: State | SRP, OCP**
+end note
+
+LockerState <|.. AvailableState
+LockerState <|.. OccupiedState
+LockerState <|.. ExpiredState
+LockerState <|.. OutOfServiceState
+Locker --> LockerState : delegates behavior >
+
+
+' ====================================================================
+'  STEP 5: OTP GENERATION — Strategy Pattern
+' ====================================================================
+class OTPService {
+    - otpStrategy : OTPGenerationStrategy
+    - otpExpiryHours : int
+    --
+    + generateOTP(pkg) : String
+    + validateOTP(pkg, otp) : boolean
+    + isExpired(pkg) : boolean
+}
+
+interface OTPGenerationStrategy <<Strategy>> {
+    + generate() : String
+}
+
+class NumericOTPStrategy {
+    - length : int
+    --
+    + generate() : String
+}
+
+class AlphanumericOTPStrategy {
+    - length : int
+    --
+    + generate() : String
+}
+
+note bottom of OTPGenerationStrategy #FFE0B2
+    **STEP 5 - OTP for secure pickup.**
+    "When package is stored, OTPService
+    generates a one-time code.
+    **Strategy Pattern** — OTP format is
+    pluggable. Numeric (6-digit) for SMS,
+    Alphanumeric for email/QR.
+    Add BarcodeStrategy? One new class."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+OTPGenerationStrategy <|.. NumericOTPStrategy
+OTPGenerationStrategy <|.. AlphanumericOTPStrategy
+OTPService --> OTPGenerationStrategy : delegates >
+LockerService --> OTPService : uses >
+
+
+' ====================================================================
+'  STEP 6: NOTIFICATIONS — Strategy Pattern
+' ====================================================================
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notifyCustomer(customer, message) : void
+    + notifyPickupReady(customer, otp, locker) : void
+    + notifyExpiring(customer, locker) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class EmailNotificationStrategy {
+    --
+    + send(recipient, message) : void
+}
+
+class SMSNotificationStrategy {
+    --
+    + send(recipient, message) : void
+}
+
+class PushNotificationStrategy {
+    --
+    + send(recipient, message) : void
+}
+
+note bottom of NotificationStrategy #B2EBF2
+    **STEP 6 - Customer gets notified.**
+    "When package is delivered to locker,
+    customer gets OTP via notification.
+    **Strategy Pattern** — delivery channel
+    is pluggable: Email, SMS, Push.
+    NotificationService can use multiple
+    strategies simultaneously."
+    **Pattern: Strategy | OCP, SRP**
+end note
+
+NotificationStrategy <|.. EmailNotificationStrategy
+NotificationStrategy <|.. SMSNotificationStrategy
+NotificationStrategy <|.. PushNotificationStrategy
+NotificationService --> NotificationStrategy : delegates >
+LockerService --> NotificationService : uses >
+
+
+' ====================================================================
+'  STEP 7: LOCKER ALLOCATION — Strategy Pattern
+' ====================================================================
+interface LockerAllocationStrategy <<Strategy>> {
+    + allocate(lockers, pkgSize) : Locker
+}
+
+class SizeBasedAllocationStrategy {
+    --
+    + allocate(lockers, pkgSize) : Locker
+}
+
+class NearestAvailableStrategy {
+    --
+    + allocate(lockers, pkgSize) : Locker
+}
+
+note bottom of LockerAllocationStrategy #D1C4E9
+    **STEP 7 - Which locker gets the package?**
+    "**Strategy Pattern** — allocation logic
+    is pluggable. SizeBased picks smallest
+    locker that fits. NearestAvailable picks
+    closest to entrance. Add LoadBalanced?
+    One new class."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+LockerAllocationStrategy <|.. SizeBasedAllocationStrategy
+LockerAllocationStrategy <|.. NearestAvailableStrategy
+LockerService --> LockerAllocationStrategy : uses >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "We traced: carrier delivers package -> LockerService
+    finds available locker via **Allocation Strategy** -> package stored,
+    locker transitions to Occupied (**State Pattern**) -> OTP generated
+    via **OTP Strategy** -> customer notified via **Notification Strategy**
+    -> customer enters OTP -> package retrieved, locker back to Available.
+    4 patterns: **Facade/Singleton**, **State**, **Strategy** (x3)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Carrier/Customer calls LockerService | Facade + Singleton | SRP, DIP |
+    | 2 | Package, Customer, Order, PackageSize/Status models | -- | SRP |
+    | 3 | LockerLocation contains Lockers, each has size + state | -- | SRP |
+    | 4 | Locker: Available -> Occupied -> Available (or Expired) | State | SRP, OCP |
+    | 5 | OTP generated for secure pickup (numeric/alphanumeric) | Strategy (OTP) | OCP, DIP |
+    | 6 | Customer notified via email/SMS/push | Strategy (notification) | OCP, SRP |
+    | 7 | Locker allocated by size-fit or nearest-available | Strategy (allocation) | OCP, DIP |
+    |  |  |  |  |
+    | **Deliver** = Steps 1,3,7,4 | **Notify** = Steps 5,6 | **Pickup** = Steps 4,5 |  |
+endlegend
+
+@enduml

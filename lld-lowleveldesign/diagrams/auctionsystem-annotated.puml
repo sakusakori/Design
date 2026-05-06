@@ -1,0 +1,579 @@
+@startuml AuctionSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Online Auction System with Mediator Pattern (Annotated for Interview)</size>\n<size:11>Trace: "Seller lists a vintage watch. 3 bidders place bids. Auction mediator coordinates: validates, broadcasts, tracks highest bid, ends auction, notifies winner."</size>
+
+
+' ====================================================================
+'  STEP 1: AUCTION MEDIATOR — The Core Pattern (KEY)
+' ====================================================================
+interface AuctionMediator <<Mediator>> {
+    + registerParticipant(participant) : void
+    + placeBid(bidder, auctionId, amount) : BidResult
+    + createAuction(seller, item, startPrice, endTime) : Auction
+    + endAuction(auctionId) : AuctionResult
+    + getAuctionStatus(auctionId) : AuctionStatus
+    + notifyParticipants(auctionId, event) : void
+}
+
+class AuctionHouse <<ConcreteMediator>> {
+    - auctions : Map<String, Auction>
+    - participants : Map<String, AuctionParticipant>
+    - bidValidator : BidValidator
+    - notificationService : NotificationService
+    - paymentService : PaymentService
+    --
+    + registerParticipant(participant) : void
+    + placeBid(bidder, auctionId, amount) : BidResult
+    + createAuction(seller, item, startPrice, endTime) : Auction
+    + endAuction(auctionId) : AuctionResult
+    + getAuctionStatus(auctionId) : AuctionStatus
+    + notifyParticipants(auctionId, event) : void
+    + getActiveAuctions() : List<Auction>
+    + getAuctionsForSeller(sellerId) : List<Auction>
+}
+
+note top of AuctionMediator #FFCDD2
+    **STEP 1 - The Mediator. (THE KEY PATTERN)**
+    "**Why Mediator here?** In an auction, sellers,
+    bidders, and the auction itself all need to
+    communicate. Without Mediator:"
+
+    "Bidder1 -> Auction -> Bidder2 (notify outbid)
+    Bidder1 -> Seller (notify new bid)
+    Auction -> Bidder3 (notify outbid)
+    ... N*N direct connections = chaos."
+
+    "**With Mediator (AuctionHouse):**
+    ALL communication goes through one hub.
+    Bidder1 -> AuctionHouse -> routes to everyone.
+    Participants never talk to each other directly.
+    Bidder doesn't know about other bidders.
+    Seller doesn't know who's bidding."
+
+    "placeBid(): mediator validates, updates auction,
+    notifies outbid bidder, notifies seller, broadcasts
+    new highest bid. ONE method, all coordination."
+    **Pattern: Mediator | SRP, Low Coupling**
+end note
+
+AuctionMediator <|.. AuctionHouse
+
+
+' ====================================================================
+'  STEP 2: PARTICIPANTS — Colleagues (don't know each other)
+' ====================================================================
+abstract class AuctionParticipant <<Colleague>> {
+    - participantId : String
+    - name : String
+    - email : String
+    - mediator : AuctionMediator
+    --
+    + AuctionParticipant(id, name, email, mediator)
+    + getId() : String
+    + getName() : String
+    + getEmail() : String
+    + {abstract} receiveNotification(event) : void
+}
+
+class Seller {
+    - listings : List<Auction>
+    --
+    + listItem(item, startPrice, endTime) : Auction
+    + cancelAuction(auctionId) : void
+    + receiveNotification(event) : void
+}
+
+class Bidder {
+    - activeBids : Map<String, Bid>
+    - wonAuctions : List<Auction>
+    - maxAutoBid : Map<String, Double>
+    --
+    + placeBid(auctionId, amount) : BidResult
+    + setAutoBid(auctionId, maxAmount) : void
+    + receiveNotification(event) : void
+}
+
+note top of AuctionParticipant #FFE0B2
+    **STEP 2 - Participants are "Colleagues".**
+    "In Mediator pattern, participants are called
+    **Colleagues**. They hold a reference to the
+    Mediator but NEVER to each other."
+
+    "**Seller** lists items via mediator:
+    listItem() -> mediator.createAuction()."
+
+    "**Bidder** places bids via mediator:
+    placeBid() -> mediator.placeBid()."
+
+    "**Neither knows about the other.**
+    Seller doesn't know who's bidding.
+    Bidder doesn't know who the seller is.
+    All communication goes through AuctionHouse."
+
+    "**receiveNotification()**: the mediator
+    calls this to push events to participants."
+    **Pattern: Mediator (Colleague) | Low Coupling**
+end note
+
+AuctionParticipant <|-- Seller
+AuctionParticipant <|-- Bidder
+AuctionParticipant --> AuctionMediator : communicates via >
+AuctionHouse o--> AuctionParticipant : coordinates >
+
+
+' ====================================================================
+'  STEP 3: AUCTION + ITEM MODELS
+' ====================================================================
+class Auction {
+    - auctionId : String
+    - item : AuctionItem
+    - seller : Seller
+    - startPrice : double
+    - currentHighestBid : Bid
+    - bids : List<Bid>
+    - bidders : Set<Bidder>
+    - startTime : LocalDateTime
+    - endTime : LocalDateTime
+    - currentState : AuctionState
+    - status : AuctionStatus
+    - reservePrice : double
+    --
+    + placeBid(bid) : void
+    + getHighestBid() : Bid
+    + isActive() : bool
+    + hasReserveMet() : bool
+    + getBidCount() : int
+    + getTimeRemaining() : long
+    + getRegisteredBidders() : Set<Bidder>
+}
+
+class AuctionItem {
+    - itemId : String
+    - title : String
+    - description : String
+    - category : ItemCategory
+    - images : List<String>
+    - condition : ItemCondition
+    --
+    + getTitle() : String
+    + getCategory() : ItemCategory
+}
+
+class Bid {
+    - bidId : String
+    - bidder : Bidder
+    - auctionId : String
+    - amount : double
+    - timestamp : LocalDateTime
+    - isAutoBid : bool
+    --
+    + getAmount() : double
+    + getBidder() : Bidder
+    + getTimestamp() : LocalDateTime
+}
+
+enum AuctionStatus {
+    DRAFT
+    ACTIVE
+    ENDED
+    SOLD
+    UNSOLD
+    CANCELLED
+}
+
+enum ItemCategory {
+    ELECTRONICS
+    COLLECTIBLES
+    ART
+    JEWELRY
+    VEHICLES
+    ANTIQUES
+}
+
+enum ItemCondition {
+    NEW
+    LIKE_NEW
+    USED_GOOD
+    USED_FAIR
+}
+
+class AuctionResult {
+    - auction : Auction
+    - winner : Bidder
+    - winningBid : Bid
+    - finalPrice : double
+    - sold : bool
+    - reason : String
+}
+
+note top of Auction #C8E6C9
+    **STEP 3 - Auction and bids.**
+    "**Auction** is the central object: item, seller,
+    bids list, current highest bid, start/end time,
+    reserve price (minimum to sell), and state."
+
+    "**Bid** records: who bid, how much, when,
+    and whether it was an auto-bid."
+
+    "**AuctionItem**: what's being sold — title,
+    category, condition, images."
+
+    "**AuctionResult**: outcome when auction ends.
+    sold=true if highest bid >= reservePrice."
+end note
+
+Auction --> AuctionItem : for item >
+Auction --> Seller : listed by >
+Auction *-- Bid : has bids >
+Auction --> AuctionStatus
+Bid --> Bidder : by >
+AuctionItem --> ItemCategory
+AuctionItem --> ItemCondition
+AuctionHouse o--> Auction : manages >
+
+
+' ====================================================================
+'  STEP 4: AUCTION STATE — State Pattern
+' ====================================================================
+interface AuctionState <<State>> {
+    + placeBid(auction, bid) : void
+    + endAuction(auction) : AuctionResult
+    + cancelAuction(auction) : void
+    + startAuction(auction) : void
+}
+
+class DraftState {
+    + startAuction(auction) : void
+    + cancelAuction(auction) : void
+}
+
+class ActiveState {
+    + placeBid(auction, bid) : void
+    + endAuction(auction) : AuctionResult
+    + cancelAuction(auction) : void
+}
+
+class EndedState {
+    ' terminal — auction closed
+}
+
+class CancelledState {
+    ' terminal — seller cancelled
+}
+
+note bottom of AuctionState #FFCDD2
+    **STEP 4 - Auction lifecycle.**
+    "**State Pattern** — each state enforces rules."
+
+    "**DraftState**: seller setting up. Can start
+    or cancel. Cannot accept bids.
+    **ActiveState**: live. Can accept bids, can
+    end (time expires), can cancel.
+    ActiveState.placeBid() validates bid > current
+    highest, updates auction.
+    **EndedState**: time up. If highestBid >= reserve
+    -> SOLD. Else -> UNSOLD.
+    **CancelledState**: terminal."
+
+    "ActiveState.placeBid() is where the Mediator
+    triggers: validate -> update -> notify outbid
+    bidder -> notify seller -> broadcast."
+    **Pattern: State | SRP, OCP**
+end note
+
+AuctionState <|.. DraftState
+AuctionState <|.. ActiveState
+AuctionState <|.. EndedState
+AuctionState <|.. CancelledState
+Auction --> AuctionState : delegates >
+
+
+' ====================================================================
+'  STEP 5: BID VALIDATION — Chain of Responsibility
+' ====================================================================
+abstract class BidValidator <<Handler>> {
+    # next : BidValidator
+    --
+    + setNext(validator) : BidValidator
+    + {abstract} validate(bid, auction) : ValidationResult
+}
+
+class MinIncrementValidator {
+    - minIncrementPercent : double
+    --
+    + validate(bid, auction) : ValidationResult
+}
+
+class AuctionActiveValidator {
+    + validate(bid, auction) : ValidationResult
+}
+
+class BidderEligibilityValidator {
+    + validate(bid, auction) : ValidationResult
+}
+
+class SelfBidValidator {
+    + validate(bid, auction) : ValidationResult
+}
+
+class BidResult {
+    - success : bool
+    - message : String
+    - bid : Bid
+    - newHighest : bool
+}
+
+note bottom of BidValidator #FFE0B2
+    **STEP 5 - Validate the bid.**
+    "**Chain of Responsibility:**
+    1. **AuctionActiveValidator**: is auction live?
+    2. **SelfBidValidator**: seller can't bid on
+       own item!
+    3. **BidderEligibilityValidator**: bidder not
+       banned/suspended?
+    4. **MinIncrementValidator**: bid must be at
+       least 5% higher than current highest."
+
+    "Mediator runs this chain before accepting
+    any bid. Add ReservePriceValidator?
+    Insert in chain."
+    **Pattern: Chain of Responsibility | OCP, SRP**
+end note
+
+BidValidator <|-- MinIncrementValidator
+BidValidator <|-- AuctionActiveValidator
+BidValidator <|-- BidderEligibilityValidator
+BidValidator <|-- SelfBidValidator
+BidValidator o--> BidValidator : next >
+AuctionHouse --> BidValidator : validates with >
+
+
+' ====================================================================
+'  STEP 6: AUTO-BID — Strategy Pattern
+' ====================================================================
+interface BiddingStrategy <<Strategy>> {
+    + calculateBid(auction, bidder, maxAmount) : double
+}
+
+class MinIncrementBiddingStrategy {
+    - incrementPercent : double
+    --
+    + calculateBid(auction, bidder, maxAmount) : double
+}
+
+class AggressiveBiddingStrategy {
+    --
+    + calculateBid(auction, bidder, maxAmount) : double
+}
+
+class SniperBiddingStrategy {
+    - snipeWindowSeconds : int
+    --
+    + calculateBid(auction, bidder, maxAmount) : double
+}
+
+note bottom of BiddingStrategy #D1C4E9
+    **STEP 6 - Auto-bidding.**
+    "Bidder sets maxAutoBid = Rs 5000. When outbid,
+    system auto-bids on their behalf."
+
+    "**Strategy Pattern** — bidding algorithm:
+    **MinIncrement**: bid current + 5% (conservative).
+    **Aggressive**: bid 50% of remaining budget.
+    **Sniper**: only bid in last 30 seconds."
+
+    "When someone outbids, Mediator checks if
+    outbid bidder has auto-bid enabled.
+    If yes: strategy.calculateBid() -> auto place."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+BiddingStrategy <|.. MinIncrementBiddingStrategy
+BiddingStrategy <|.. AggressiveBiddingStrategy
+BiddingStrategy <|.. SniperBiddingStrategy
+Bidder --> BiddingStrategy : uses >
+
+
+' ====================================================================
+'  STEP 7: MEDIATOR FLOW — The Core Interaction
+' ====================================================================
+note as MEDIATOR_FLOW #FFCDD2
+    **STEP 7 - Mediator placeBid() flow. (KEY)**
+    "Bidder1 calls bidder1.placeBid('A001', 5000)
+    which calls mediator.placeBid(bidder1, 'A001', 5000):"
+
+    "1. Look up Auction 'A001'
+    2. Run BidValidator chain:
+       Active? Yes. Self-bid? No. Eligible? Yes.
+       MinIncrement? 5000 > 4500*1.05=4725? Yes.
+    3. Create Bid object
+    4. Auction.placeBid(bid) updates state
+    5. **MEDIATOR COORDINATES all notifications:**
+       a. Notify previous highest bidder (Bidder2):
+          'You've been outbid on Vintage Watch!'
+       b. Notify seller: 'New bid Rs 5000!'
+       c. Broadcast to all watchers: 'New high bid!'
+       d. Check Bidder2's auto-bid:
+          If maxAutoBid=6000 -> auto-place 5250
+          -> Repeat from step 2!"
+
+    "**Without Mediator**: Bidder1 would need to know
+    about Bidder2, Seller, watchers... tight coupling.
+    **With Mediator**: Bidder1 only knows AuctionHouse."
+end note
+
+
+' ====================================================================
+'  STEP 8: NOTIFICATION — Observer via Mediator
+' ====================================================================
+class AuctionEvent {
+    - eventType : AuctionEventType
+    - auction : Auction
+    - bid : Bid
+    - message : String
+    - timestamp : LocalDateTime
+}
+
+enum AuctionEventType {
+    NEW_BID
+    OUTBID
+    AUCTION_STARTING
+    AUCTION_ENDING_SOON
+    AUCTION_ENDED
+    AUCTION_WON
+    AUCTION_CANCELLED
+    RESERVE_MET
+}
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(participant, event) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class EmailNotification {
+    + send(recipient, message) : void
+}
+
+class PushNotification {
+    + send(recipient, message) : void
+}
+
+class SMSNotification {
+    + send(recipient, message) : void
+}
+
+note bottom of AuctionEvent #B2EBF2
+    **STEP 8 - Notifications via Mediator.**
+    "The Mediator replaces traditional Observer here.
+    Instead of auction.notifyObservers(), the
+    **Mediator decides** who gets notified:"
+
+    "NEW_BID: notify seller + all watchers.
+    OUTBID: notify the outbid bidder specifically.
+    AUCTION_ENDING_SOON: notify all bidders.
+    AUCTION_WON: notify winner + seller.
+    AUCTION_CANCELLED: notify all bidders."
+
+    "Notification channel via **Strategy**:
+    Email, Push, SMS."
+    **Mediator replaces Observer for coordination**
+end note
+
+AuctionEvent --> AuctionEventType
+NotificationStrategy <|.. EmailNotification
+NotificationStrategy <|.. PushNotification
+NotificationStrategy <|.. SMSNotification
+NotificationService --> NotificationStrategy : delegates >
+AuctionHouse --> NotificationService : notifies via >
+AuctionHouse --> AuctionEvent : creates >
+
+
+' ====================================================================
+'  STEP 9: PAYMENT
+' ====================================================================
+class PaymentService {
+    --
+    + processPayment(winner, amount) : PaymentResult
+    + processRefund(bidder, amount) : PaymentResult
+}
+
+class PaymentResult {
+    - success : bool
+    - transactionId : String
+}
+
+AuctionHouse --> PaymentService : on auction end >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Seller lists vintage watch via Mediator. 3 bidders
+    place bids — all through AuctionHouse (Mediator). Bidder1 bids 5000.
+    Mediator validates (**Chain**), updates auction (**State**: Active),
+    notifies outbid Bidder2 ('You've been outbid!'), notifies Seller
+    ('New bid Rs 5000!'), checks Bidder2's auto-bid (**Strategy**).
+    Auction timer expires -> Mediator ends auction, announces winner,
+    triggers payment."
+
+    "**Why Mediator?** Without it, N bidders + seller + watchers =
+    N*(N+1) direct connections. With Mediator: everyone talks to
+    ONE hub. Add a new participant type (Auctioneer)? Register with
+    Mediator. No existing participant changes."
+
+    "6 patterns: **Mediator** (AuctionHouse — the star), **State**
+    (auction lifecycle), **Chain of Responsibility** (bid validation),
+    **Strategy** (x2: auto-bidding + notification), **Composition**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | AuctionHouse coordinates ALL communication between participants | Mediator | Participants never talk directly |
+    | 2 | Seller lists item, Bidder places bid — both via Mediator only | Mediator (Colleague) | Low coupling between participants |
+    | 3 | Auction: item, bids, highest bid, reserve, start/end time | Entity | Central domain object |
+    | 4 | Draft -> Active -> Ended (Sold/Unsold) / Cancelled | State | Auction lifecycle with rules |
+    | 5 | Active? Not self-bid? Eligible? Min increment met? | Chain of Responsibility | Sequential bid validation |
+    | 6 | Auto-bid: MinIncrement / Aggressive / Sniper strategy | Strategy (bidding) | Automatic bidding on outbid |
+    | 7 | Mediator.placeBid(): validate -> update -> notify ALL parties | Mediator Flow | ONE method, all coordination |
+    | 8 | NEW_BID / OUTBID / WON / CANCELLED events via Email/Push/SMS | Strategy (notification) | Mediator decides who gets what |
+    |  |  |  |  |
+    | **Core**: Mediator = hub. Bidders/Sellers = spokes. No spoke-to-spoke communication. |  |  |
+endlegend
+
+@enduml

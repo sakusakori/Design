@@ -1,0 +1,240 @@
+@startuml DigitalWellbeing_InterviewFlow
+
+skinparam defaultFontSize 12
+skinparam rectangleBorderColor #555555
+skinparam rectangleRoundCorner 15
+skinparam arrowColor #444444
+skinparam arrowThickness 2
+
+title <size:22>Digital Wellbeing System — Bottom-Up Interview Walkthrough</size>\n<size:13>Start from Step 1. Each step answers the natural next question.</size>
+
+
+' ====================================================================
+'  STEP 1: What are we even tracking?
+' ====================================================================
+rectangle "**STEP 1: What are we tracking?**" as S1 #E8F5E9 {
+    rectangle "  **AppInfo**\n  packageName : String\n  displayName : String\n  category : AppCategory  " as S1a #White
+    rectangle "  **AppCategory** (enum)\n  SOCIAL_MEDIA | PRODUCTIVITY\n  ENTERTAINMENT | GAMING  " as S1b #White
+    S1a -right-> S1b : has >
+}
+
+note right of S1 #C8E6C9
+    **SAY:** "Let's start simple. We're tracking
+    apps. Each app has a package name
+    (com.instagram), a display name,
+    and a category."
+
+    No patterns yet. Just data.
+end note
+
+
+' ====================================================================
+'  STEP 2: What does "usage" look like?
+' ====================================================================
+rectangle "**STEP 2: What does one usage session look like?**" as S2 #E8F5E9 {
+    rectangle "  **UsageSession**\n  app : AppInfo\n  startTime : long\n  endTime : long\n  + getDurationMillis() : long\n  + isActive() : boolean  " as S2a #White
+    rectangle "  **DailyUsageSummary**\n  date : LocalDate\n  app : AppInfo\n  totalTimeMillis : long\n  sessionCount : int\n  + getTotalMinutes() : int  " as S2b #White
+    S2b o-left- S2a : aggregates
+}
+
+note right of S2 #C8E6C9
+    **SAY:** "When you open Instagram at 10am
+    and close at 10:30am, that's one
+    **UsageSession** (30 min duration).
+
+    All sessions of one app on one day
+    get rolled up into a **DailyUsageSummary**.
+
+    These are just data holders. **(SRP)**"
+end note
+
+
+' ====================================================================
+'  STEP 3: Who creates these sessions?
+' ====================================================================
+rectangle "**STEP 3: Who creates and manages sessions?**" as S3 #E3F2FD {
+    rectangle "  **ScreenTimeTracker** <<Singleton>>\n  ──────────────────────────────────\n  - activeSessions : Map\n  - observers : List\n  ──────────────────────────────────\n  + getInstance() : ScreenTimeTracker\n  + onAppOpened(app) -> creates UsageSession\n  + onAppClosed(app) -> ends session, fires event  " as S3a #White
+}
+
+note right of S3 #BBDEFB
+    **SAY:** "We need something that listens for
+    app open/close and creates sessions.
+    That's the **ScreenTimeTracker**.
+
+    **Why Singleton?** If we have 2 tracker
+    instances, sessions get double-counted.
+    One device = one tracker = one source
+    of truth."
+
+    **Pattern: Singleton**
+end note
+
+
+' ====================================================================
+'  STEP 4: When a session ends, lots of things need to happen...
+' ====================================================================
+rectangle "**STEP 4: App closed — now what? Multiple things must happen!**" as S4 #FFF3E0 {
+    rectangle "  <<interface>>\n  **UsageEventObserver**\n  + onUsageEvent(event)  " as S4i #White
+    rectangle "  **PersistenceObserver**\n  -> save session to disk  " as S4a #White
+    rectangle "  **StatisticsUpdateObserver**\n  -> refresh the stats UI  " as S4b #White
+    rectangle "  **UsageLimitObserver**\n  -> check if daily limit hit  " as S4c #White
+    S4i -down-> S4a
+    S4i -down-> S4b
+    S4i -down-> S4c
+}
+
+note right of S4 #FFE0B2
+    **SAY:** "When a session ends, 3 things
+    must happen: save data, update UI,
+    check limits. But the tracker shouldn't
+    know about any of that.
+
+    **Problem:** tight coupling if tracker
+    directly calls persistence, stats, limits.
+
+    **Solution: Observer Pattern.**
+    Tracker just says 'something happened'.
+    Each observer reacts independently.
+
+    **Want to add SMS alerts later?**
+    Add one observer. Tracker unchanged. **(OCP)**"
+
+    **Pattern: Observer**
+end note
+
+
+' ====================================================================
+'  STEP 5: Where does the data actually get saved?
+' ====================================================================
+rectangle "**STEP 5: Where does data get stored? (survives reboots)**" as S5 #FFEBEE {
+    rectangle "  <<interface>> **UsageRepository**\n  + saveSession(session)\n  + getDailySummary(app, date)\n  + deleteOlderThan(date)  " as S5r #White
+    rectangle "  <<interface>> **PersistenceStrategy**\n  + write(key, data)\n  + read(key)\n  + delete(key)  " as S5s #White
+    rectangle "  **SQLitePersistence**  " as S5a #White
+    rectangle "  **FilePersistence**  " as S5b #White
+    rectangle "  **SharedPrefsPersistence**  " as S5c #White
+    S5r -down-> S5s : delegates to
+    S5s -down-> S5a
+    S5s -down-> S5b
+    S5s -down-> S5c
+}
+
+note right of S5 #FFCDD2
+    **SAY:** "The PersistenceObserver needs
+    to save data somewhere durable
+    (must survive reboots).
+
+    **Problem:** If we hardcode SQLite
+    everywhere, we can't swap to file
+    storage for tests.
+
+    **Solution: Two patterns together.**
+
+    **Repository Pattern** — business logic
+    calls saveSession(). Doesn't know
+    if it's SQLite, file, or cloud. **(DIP)**
+
+    **Strategy Pattern** — actual storage
+    is pluggable. SQLite for prod,
+    InMemory for unit tests. **(OCP, LSP)**"
+
+    **Patterns: Repository + Strategy**
+end note
+
+
+' ====================================================================
+'  STEP 6: How do we show usage stats to the user?
+' ====================================================================
+rectangle "**STEP 6: How do we display usage statistics?**" as S6 #F3E5F5 {
+    rectangle "  **UsageStatisticsService**\n  + getWeeklyReport() : UsageReport\n  + getMostUsedApps(days) : List  " as S6a #White
+    rectangle "  **UsageReportBuilder** <<Builder>>\n  + setDateRange(start, end)\n  + addDailySummary(s)\n  + build() : UsageReport  " as S6b #White
+    rectangle "  **UsageReport** (immutable)\n  totalHours, dailyAverage\n  appBreakdown  " as S6c #White
+    S6a -right-> S6b : uses >
+    S6b -right-> S6c : builds >
+}
+
+note right of S6 #E1BEE7
+    **SAY:** "The stats service reads from
+    the repository and builds a report.
+
+    **Problem:** UsageReport has 5+ fields.
+    Constructor with 6 params is unreadable.
+
+    **Solution: Builder Pattern.**
+    builder.setDateRange(mon, sun)
+      .addDailySummary(mon)
+      .addDailySummary(tue)
+      .build()
+
+    Clean, readable, validated. **(SRP)**"
+
+    **Pattern: Builder**
+end note
+
+
+' ====================================================================
+'  STEP 7: How do we keep only 7 days?
+' ====================================================================
+rectangle "**STEP 7: How do we enforce the 7-day window?**" as S7 #E0F7FA {
+    rectangle "  **DataRetentionManager**\n  retentionDays = 7\n  + purgeExpiredData()\n  calls repo.deleteOlderThan(today - 7)  " as S7a #White
+}
+
+note right of S7 #B2EBF2
+    **SAY:** "Simple. On every app startup,
+    this manager calls deleteOlderThan().
+    Storage stays bounded.
+
+    Change to 30 days? One field. **(SRP)**"
+end note
+
+
+' ====================================================================
+'  STEP 8: How does it all come together?
+' ====================================================================
+rectangle "**STEP 8: Tie it all together — the Facade**" as S8 #E8EAF6 {
+    rectangle "  **DigitalWellbeingSystem** <<Facade>>\n  ──────────────────────────────────\n  + initialize()   -> wires everything up\n  + onAppOpened()  -> delegates to tracker\n  + onAppClosed()  -> delegates to tracker\n  + getUsageStats() -> delegates to stats service\n  + setDailyLimit() -> delegates to limit observer  " as S8a #White
+}
+
+note right of S8 #BBDEFB
+    **SAY:** "Finally, the client shouldn't know
+    about trackers, observers, repositories.
+    **Facade Pattern** — one class, one API.
+    Client calls onAppOpened(). Done.
+    All the wiring is hidden inside."
+
+    **Pattern: Facade**
+end note
+
+
+' ====================================================================
+'  FLOW ARROWS — each asks the natural next question
+' ====================================================================
+S1 -down-> S2 : "  OK, but what does a usage record look like?  "
+S2 -down-> S3 : "  Who creates these sessions?  "
+S3 -down-> S4 : "  Session ended. Now what?  "
+S4 -down-> S5 : "  Observer saves data... but where?  "
+S5 -down-> S6 : "  Data is stored. How do we show it?  "
+S6 -down-> S7 : "  Stats work. How to keep only 7 days?  "
+S7 -down-> S8 : "  Everything works. How to expose it cleanly?  "
+
+
+' ====================================================================
+'  CLOSING
+' ====================================================================
+rectangle "**WRAP UP — Say This**" as CLOSE #F5F5F5 {
+    rectangle "  \"We started with concrete models, built tracking on top,\n  used Observer to decouple reactions, Repository + Strategy\n  for durable + swappable persistence, Builder for clean reports,\n  and Facade to hide it all behind one API.\n\n  6 patterns, each solving a specific problem.\n  All 3 requirements met.\"  " as CLOSE_text #FFFDE7
+}
+
+S8 -down-> CLOSE
+
+
+' ====================================================================
+'  REQUIREMENTS MAP
+' ====================================================================
+legend bottom
+    |= Requirement |= Steps That Solve It |
+    | Track screen time of different apps | Steps 1-4 (Models + Tracker + Observers) |
+    | Display usage statistics | Step 6 (StatsService + Builder) |
+    | Persist data for 7 days across reboots | Step 5 (Repository + Strategy) + Step 7 (Retention) |
+endlegend
+
+@enduml

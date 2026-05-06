@@ -1,0 +1,342 @@
+@startuml TicTacToe_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 40
+skinparam ranksep 35
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Tic Tac Toe Game (Annotated for Interview)</size>\n<size:11>Trace: "Player1 (X) places at row 0, col 0. Board updated. Check row, col, diagonals for win. No winner yet. Player2 (O) turn."</size>
+
+
+' ====================================================================
+'  STEP 1: GAME — Orchestrator
+' ====================================================================
+class TicTacToeGame {
+    - players : deque<Player*>
+    - gameBoard : Board*
+    - winner : Player*
+    - crossPiece : PlayingPieceX
+    - noughtsPiece : PlayingPieceO
+    - player1 : Player
+    - player2 : Player
+    --
+    + TicTacToeGame()
+    + ~TicTacToeGame()
+    + initializeGame() : void
+    + startGame() : GameStatus
+    + checkForWinner(row, col, pieceType) : bool
+}
+
+enum GameStatus {
+    DRAW
+    WIN
+}
+
+note top of TicTacToeGame #BBDEFB
+    **STEP 1 - Start here.**
+    "TicTacToeGame is the orchestrator.
+    Owns the board, two players, two pieces,
+    and the game loop."
+
+    "**initializeGame():**
+    Adds players to deque, creates 3x3 Board."
+
+    "**startGame()** main loop:
+    1. Print board
+    2. Get free cells — if none, return DRAW
+    3. Pop front player from deque (round-robin)
+    4. Get row, col input from user
+    5. Validate and place piece on board
+    6. Check for winner (row, col, diagonals)
+    7. If winner found: return WIN
+    8. Push player to back of deque
+    9. Repeat"
+end note
+
+TicTacToeGame --> GameStatus
+
+
+' ====================================================================
+'  STEP 2: PLAYER + PLAYING PIECE HIERARCHY
+' ====================================================================
+class Player {
+    - name : string
+    - playingPiece : PlayingPiece*
+    --
+    + Player(name, playingPiece)
+    + getName() : string
+    + setName(name) : void
+    + getPlayingPiece() : PlayingPiece*
+    + setPlayingPiece(piece) : void
+}
+
+class PlayingPiece {
+    + pieceType : PieceType
+    --
+    + PlayingPiece(pieceType)
+}
+
+class PlayingPieceX {
+    --
+    + PlayingPieceX()
+}
+
+class PlayingPieceO {
+    --
+    + PlayingPieceO()
+}
+
+enum PieceType {
+    X
+    O
+}
+
+note top of Player #C8E6C9
+    **STEP 2 - Who plays? With what piece?**
+    "**Player** has a name and a PlayingPiece.
+    Player1 gets PlayingPieceX (X mark).
+    Player2 gets PlayingPieceO (O mark)."
+
+    "**PlayingPiece** is the base class with
+    a pieceType field. **PlayingPieceX** and
+    **PlayingPieceO** inherit from it, setting
+    pieceType to X or O respectively."
+
+    "This hierarchy allows extensibility:
+    add PlayingPieceStar for a 3-player variant?
+    One new class."
+    **Pattern: Inheritance | OCP**
+end note
+
+PlayingPiece <|-- PlayingPieceX
+PlayingPiece <|-- PlayingPieceO
+PlayingPiece --> PieceType
+Player --> PlayingPiece : plays with >
+TicTacToeGame *-- Player : has 2 >
+TicTacToeGame *-- PlayingPieceX : cross >
+TicTacToeGame *-- PlayingPieceO : noughts >
+
+
+' ====================================================================
+'  STEP 3: BOARD — The 3x3 Grid
+' ====================================================================
+class Board {
+    - size : int
+    - board : vector<vector<PlayingPiece*>>
+    --
+    + Board(size)
+    + addPiece(row, col, piece) : bool
+    + getFreeCells() : vector<pair<int,int>>
+    + printBoard() : void
+}
+
+note top of Board #C8E6C9
+    **STEP 3 - The game board.**
+    "**Board** is an NxN grid (default 3x3)
+    of PlayingPiece pointers. nullptr = empty."
+
+    "**addPiece(row, col, piece):**
+    If cell is nullptr -> place piece, return true.
+    If cell is occupied -> return false (invalid)."
+
+    "**getFreeCells():**
+    Returns all (row, col) pairs where
+    board[row][col] == nullptr.
+    If empty vector -> board is full -> DRAW."
+
+    "**printBoard():** prints the grid with
+    X, O, or empty, separated by | and ---."
+end note
+
+Board o--> PlayingPiece : grid of >
+TicTacToeGame --> Board : owns >
+
+
+' ====================================================================
+'  STEP 4: TURN MANAGEMENT — Deque Round-Robin
+' ====================================================================
+note as TURNS #FFE0B2
+    **STEP 4 - Turn management.**
+    "Players are stored in a **deque**
+    (double-ended queue) for round-robin:"
+
+    "findPlayerTurn():
+    1. Pop front -> current player
+    2. Push to back
+    [P1, P2] -> pop P1 -> [P2]
+    -> push P1 to back -> [P2, P1]"
+
+    "Next turn: pop P2 -> [P1]
+    -> push P2 -> [P1, P2]"
+
+    "Works for any N players.
+    Add Player3 with PlayingPieceStar?
+    Just push to deque. No code change."
+    **Pattern: Circular Queue (Round-Robin)**
+end note
+
+
+' ====================================================================
+'  STEP 5: WIN DETECTION — The Core Logic (KEY)
+' ====================================================================
+note as WINCHECK #FFCDD2
+    **STEP 5 - checkForWinner(). (KEY STEP)**
+    "After each move at (row, col), check if
+    that player won. Four checks:"
+
+    "**1. Row check:**
+    Are all cells in row == pieceType?
+    for c in 0..size: board[row][c] == pieceType?
+    If all match -> WIN"
+
+    "**2. Column check:**
+    Are all cells in col == pieceType?
+    for r in 0..size: board[r][col] == pieceType?
+    If all match -> WIN"
+
+    "**3. Main diagonal (if row == col):**
+    for i in 0..size: board[i][i] == pieceType?
+    If all match -> WIN"
+
+    "**4. Anti-diagonal (if row+col == size-1):**
+    for i in 0..size:
+      board[i][size-1-i] == pieceType?
+    If all match -> WIN"
+
+    "**Only need to check the row/col/diag
+    that the last move touches.** No need to
+    scan the entire board. O(N) per move."
+end note
+
+
+' ====================================================================
+'  STEP 6: GAME LOOP — Complete Flow
+' ====================================================================
+note as GAMELOOP #FFE0B2
+    **STEP 6 - The complete game loop.**
+
+    "startGame():"
+    "while (true) {"
+    "  printBoard()"
+    "  freeCells = getFreeCells()"
+    "  if freeCells.empty() -> return DRAW"
+    ""
+    "  player = players.front()"
+    "  players.pop_front()"
+    ""
+    "  // get input from user"
+    "  row, col = user input"
+    ""
+    "  if !board.addPiece(row, col, piece)"
+    "    -> 'Invalid move, try again'"
+    "    -> push player back to FRONT (retry)"
+    "    -> continue"
+    ""
+    "  if checkForWinner(row, col, pieceType)"
+    "    -> winner = player"
+    "    -> return WIN"
+    ""
+    "  players.push_back(player)"
+    "}"
+end note
+
+
+' ====================================================================
+'  VISUAL: BOARD STATE
+' ====================================================================
+note as VISUAL #FFFDE7
+    **Visual: Board state example.**
+
+    "After 5 moves:"
+    "  X | O | X"
+    " ---|---|---"
+    "  O | X |  "
+    " ---|---|---"
+    "    |   | O"
+
+    "Player1 (X) plays at (2,0):"
+    "  X | O | X"
+    " ---|---|---"
+    "  O | X |  "
+    " ---|---|---"
+    "  X |   | O"
+
+    "checkForWinner(2, 0, X):"
+    "  Row 2: X _ O -> NO"
+    "  Col 0: X O X -> NO"
+    "  Main diag (2!=0): skip"
+    "  Anti-diag (2+0!=2): skip"
+    "  No winner yet."
+
+    "Player1 (X) later plays at (1,2):"
+    "  X | O | X"
+    " ---|---|---"
+    "  O | X | X"
+    " ---|---|---"
+    "  X |   | O"
+    "  Anti-diag: X X X -> WIN!"
+end note
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:**
+    "Player1 (X) and Player2 (O) take turns via
+    deque round-robin. Each turn: validate move,
+    place piece on 3x3 Board, check row + col +
+    diagonals for win. If board full with no winner
+    -> DRAW."
+
+    "**Key design decisions:**
+    1. **PlayingPiece hierarchy** — X and O as subclasses.
+       Extensible for new piece types.
+    2. **Deque round-robin** — supports N players.
+    3. **O(N) win check** — only check the row/col/diag
+       touched by the last move, not entire board.
+    4. **Board validates** — addPiece() returns false
+       for occupied cells. Game retries.
+    Simple, clean, no over-engineering."
+end note
+
+
+' ====================================================================
+'  LAYOUT
+' ====================================================================
+TicTacToeGame -[hidden]down-> TURNS
+TURNS -[hidden]down-> WINCHECK
+WINCHECK -[hidden]down-> GAMELOOP
+GAMELOOP -[hidden]down-> VISUAL
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern / Concept |= Key Point |
+    | 1 | TicTacToeGame orchestrates: board, players, loop | Orchestrator | initializeGame() + startGame() |
+    | 2 | Player has PlayingPiece (X or O via inheritance) | Inheritance | PlayingPiece -> PlayingPieceX/O |
+    | 3 | Board: NxN grid of PlayingPiece*, addPiece + getFreeCells | Composition | nullptr = empty cell |
+    | 4 | Deque pops front, pushes back for turn rotation | Circular Queue | Supports N players |
+    | 5 | Check row + col + main diagonal + anti-diagonal | Win Detection | O(N) per move, not O(N^2) |
+    | 6 | Loop: print -> get input -> validate -> place -> check win | Game Loop | DRAW if no free cells |
+    |  |  |  |  |
+    | **Core insight**: Only check the row/col/diag that the last move touches. O(N) not O(N^2). |  |  |
+endlegend
+
+@enduml

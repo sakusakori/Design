@@ -1,0 +1,471 @@
+@startuml WordProcessor_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Word Processor using Flyweight Pattern (Annotated for Interview)</size>\n<size:11>Trace: "User types 'hello hello'. 10 characters but only 4 unique CharacterStyle objects (h,e,l,o). Flyweight shares them. Massive memory savings."</size>
+
+
+' ====================================================================
+'  STEP 1: DOCUMENT — Entry Point
+' ====================================================================
+class Document {
+    - pages : List<Page>
+    - characterFactory : CharacterStyleFactory
+    - undoStack : List<Command>
+    --
+    + addCharacter(char, row, col, font, size, color, bold, italic) : void
+    + deleteCharacter(row, col) : void
+    + applyStyle(fromRow, fromCol, toRow, toCol, font, size, color) : void
+    + getPage(index) : Page
+    + render() : void
+    + undo() : void
+    + getMemoryUsage() : long
+}
+
+note top of Document #BBDEFB
+    **STEP 1 - Start here.**
+    "User opens a word processor and types text.
+    Document is the entry point. It owns pages
+    and a **CharacterStyleFactory** (the Flyweight
+    factory). Every addCharacter() call goes through
+    the factory to share style objects."
+
+    "Key insight: a 10,000 word document has ~50,000
+    characters but maybe only 20 unique styles
+    (font+size+color+bold+italic combos). Flyweight
+    shares those 20 objects across 50,000 characters."
+end note
+
+
+' ====================================================================
+'  STEP 2: PAGE + CHARACTER — Extrinsic State
+' ====================================================================
+class Page {
+    - rows : List<Row>
+    - pageNumber : int
+    --
+    + getRow(index) : Row
+    + addRow(row) : void
+    + render() : void
+}
+
+class Row {
+    - characters : List<Character>
+    - lineHeight : double
+    --
+    + addCharacter(character) : void
+    + removeCharacter(col) : void
+    + getCharacter(col) : Character
+    + render() : void
+}
+
+class Character {
+    - charValue : char
+    - row : int
+    - column : int
+    - style : CharacterStyle
+    --
+    + Character(charValue, row, col, style)
+    + getChar() : char
+    + getRow() : int
+    + getColumn() : int
+    + getStyle() : CharacterStyle
+    + render() : void
+}
+
+note top of Character #C8E6C9
+    **STEP 2 - Each character on screen.**
+    "**Character** holds:
+    - charValue: 'h', 'e', 'l', 'o' (the letter)
+    - row, column: position on page
+    - style: **pointer to shared CharacterStyle**"
+
+    "charValue + row + column = **extrinsic state**
+    (unique per character, stored here)."
+
+    "style = **reference to intrinsic state**
+    (shared via Flyweight, NOT duplicated)."
+
+    "Document -> Page -> Row -> Character.
+    Standard composition hierarchy."
+end note
+
+Document *-- Page : has pages >
+Page *-- Row : has rows >
+Row *-- Character : has chars >
+Character --> CharacterStyle : shares (flyweight) >
+
+
+' ====================================================================
+'  STEP 3: CHARACTER STYLE — The Flyweight Object (KEY)
+' ====================================================================
+class CharacterStyle <<Flyweight>> {
+    - fontFamily : String
+    - fontSize : int
+    - color : Color
+    - isBold : bool
+    - isItalic : bool
+    - isUnderline : bool
+    --
+    + CharacterStyle(font, size, color, bold, italic, underline)
+    + getFontFamily() : String
+    + getFontSize() : int
+    + getColor() : Color
+    + isBold() : bool
+    + isItalic() : bool
+    + isUnderline() : bool
+    + getKey() : String
+    + equals(other) : bool
+    + hashCode() : int
+}
+
+class Color {
+    - red : int
+    - green : int
+    - blue : int
+    --
+    + Color(r, g, b)
+    + toHex() : String
+}
+
+note top of CharacterStyle #FFE0B2
+    **STEP 3 - The Flyweight object. (KEY STEP)**
+    "**CharacterStyle** is the intrinsic state:
+    font, size, color, bold, italic, underline."
+
+    "**This object is SHARED, not duplicated.**
+    In a 50,000 character document:"
+
+    "WITHOUT Flyweight:
+    50,000 CharacterStyle objects.
+    Each ~100 bytes. Total: ~5 MB."
+
+    "WITH Flyweight:
+    ~20 unique CharacterStyle objects shared.
+    50,000 Characters hold pointers (~8 bytes each).
+    Total: ~400 KB. **12x savings.**"
+
+    "**Immutable**: once created, CharacterStyle
+    never changes. This is critical — if shared
+    objects were mutable, changing one would
+    affect all characters using it."
+    **Pattern: Flyweight (intrinsic state) | Immutable**
+end note
+
+CharacterStyle --> Color
+
+
+' ====================================================================
+'  STEP 4: CHARACTER STYLE FACTORY — Flyweight Factory (KEY)
+' ====================================================================
+class CharacterStyleFactory <<FlyweightFactory>> {
+    - styleCache : Map<String, CharacterStyle>
+    --
+    + getStyle(font, size, color, bold, italic, underline) : CharacterStyle
+    + getCacheSize() : int
+    + getMemorySaved() : long
+    + clearCache() : void
+    - buildKey(font, size, color, bold, italic, underline) : String
+}
+
+note top of CharacterStyleFactory #FFCDD2
+    **STEP 4 - The Flyweight Factory. (KEY STEP)**
+    "The single most important class in this design."
+
+    "**getStyle(Arial, 12, Black, false, false, false):**
+    1. Build cache key: 'Arial-12-#000000-false-false-false'
+    2. Check styleCache map.
+    3. If key exists: **return existing object** (shared!)
+    4. If not: create new CharacterStyle, store in
+       cache, return it."
+
+    "**This is the Flyweight Pattern in action.**
+    No matter how many characters use 'Arial 12pt
+    Black Normal', only ONE CharacterStyle object
+    exists in memory. All characters point to it."
+
+    "getCacheSize(): how many unique styles exist.
+    getMemorySaved(): (totalChars - cacheSize) *
+    sizeof(CharacterStyle)."
+    **Pattern: Flyweight Factory | Memory Efficiency**
+end note
+
+CharacterStyleFactory o--> CharacterStyle : caches >
+Document --> CharacterStyleFactory : uses >
+
+
+' ====================================================================
+'  STEP 5: INTRINSIC vs EXTRINSIC — The Core Concept
+' ====================================================================
+note as FLYWEIGHT_CONCEPT #FFE0B2
+    **STEP 5 - Intrinsic vs Extrinsic. (EXPLAIN THIS)**
+    "The Flyweight Pattern splits object state into two:"
+
+    "**INTRINSIC STATE (shared, inside Flyweight):**
+    - fontFamily: 'Arial'
+    - fontSize: 12
+    - color: Black
+    - isBold: false
+    - isItalic: false
+    - isUnderline: false
+    Stored ONCE in CharacterStyle. Shared by many."
+
+    "**EXTRINSIC STATE (unique, outside Flyweight):**
+    - charValue: 'h' (the actual letter)
+    - row: 3 (which line)
+    - column: 7 (which position)
+    Stored in each Character. Unique per character."
+
+    "**Why this split?** The intrinsic state is the
+    SAME for hundreds of characters. Duplicating
+    {Arial, 12, Black, normal} 500 times wastes
+    memory. Share one object, store only the
+    unique parts (letter + position) per character."
+end note
+
+
+' ====================================================================
+'  STEP 6: STYLE COMMAND — Undo Support (Command Pattern)
+' ====================================================================
+interface StyleCommand <<Command>> {
+    + execute() : void
+    + undo() : void
+}
+
+class ApplyStyleCommand {
+    - document : Document
+    - fromRow : int
+    - fromCol : int
+    - toRow : int
+    - toCol : int
+    - newStyle : CharacterStyle
+    - previousStyles : Map<Position, CharacterStyle>
+    --
+    + execute() : void
+    + undo() : void
+}
+
+class InsertCharCommand {
+    - document : Document
+    - charValue : char
+    - row : int
+    - col : int
+    - style : CharacterStyle
+    --
+    + execute() : void
+    + undo() : void
+}
+
+class DeleteCharCommand {
+    - document : Document
+    - deletedChar : Character
+    - row : int
+    - col : int
+    --
+    + execute() : void
+    + undo() : void
+}
+
+note bottom of StyleCommand #D1C4E9
+    **STEP 6 - Undo support.**
+    "User selects text and makes it Bold.
+    **Command Pattern** — each action is an object."
+
+    "**ApplyStyleCommand**: saves previous styles,
+    applies new style (gets from Factory — shared!).
+    undo() restores previous styles."
+
+    "**InsertCharCommand**: inserts character.
+    undo() removes it."
+
+    "**DeleteCharCommand**: saves deleted character.
+    undo() re-inserts it."
+
+    "Document.undoStack stores commands for Ctrl+Z."
+    **Pattern: Command | SRP, OCP**
+end note
+
+StyleCommand <|.. ApplyStyleCommand
+StyleCommand <|.. InsertCharCommand
+StyleCommand <|.. DeleteCharCommand
+Document o--> StyleCommand : undo stack >
+
+
+' ====================================================================
+'  STEP 7: TEXT FORMATTING — Strategy Pattern
+' ====================================================================
+interface TextFormatter <<Strategy>> {
+    + format(rows, pageWidth) : List<Row>
+}
+
+class LeftAlignFormatter {
+    + format(rows, pageWidth) : List<Row>
+}
+
+class CenterAlignFormatter {
+    + format(rows, pageWidth) : List<Row>
+}
+
+class JustifyFormatter {
+    + format(rows, pageWidth) : List<Row>
+}
+
+class RightAlignFormatter {
+    + format(rows, pageWidth) : List<Row>
+}
+
+note bottom of TextFormatter #C8E6C9
+    **STEP 7 - Text alignment.**
+    "**Strategy Pattern** — alignment is pluggable.
+    LeftAlign, CenterAlign, Justify, RightAlign.
+    Each formats rows differently within page width."
+    **Pattern: Strategy | OCP**
+end note
+
+TextFormatter <|.. LeftAlignFormatter
+TextFormatter <|.. CenterAlignFormatter
+TextFormatter <|.. JustifyFormatter
+TextFormatter <|.. RightAlignFormatter
+Document --> TextFormatter : formats with >
+
+
+' ====================================================================
+'  STEP 8: RENDERING — Strategy Pattern
+' ====================================================================
+interface RenderStrategy <<Strategy>> {
+    + render(document) : void
+}
+
+class ScreenRenderer {
+    + render(document) : void
+}
+
+class PrintRenderer {
+    - dpi : int
+    --
+    + render(document) : void
+}
+
+class PDFExportRenderer {
+    - outputPath : String
+    --
+    + render(document) : void
+}
+
+note bottom of RenderStrategy #C8E6C9
+    **STEP 8 - How to display/export.**
+    "**Strategy Pattern** — rendering is pluggable.
+    Screen (WYSIWYG), Print (with margins/DPI),
+    PDF export."
+    **Pattern: Strategy | OCP**
+end note
+
+RenderStrategy <|.. ScreenRenderer
+RenderStrategy <|.. PrintRenderer
+RenderStrategy <|.. PDFExportRenderer
+Document --> RenderStrategy : renders via >
+
+
+' ====================================================================
+'  MEMORY VISUALIZATION
+' ====================================================================
+note as MEMORY #FFFDE7
+    **Memory savings visualization.**
+
+    "Document: 'hello hello' (10 characters)"
+
+    "**WITHOUT Flyweight (naive):**
+    h -> {Arial,12,Black,N,N,N}  (100 bytes)
+    e -> {Arial,12,Black,N,N,N}  (100 bytes)
+    l -> {Arial,12,Black,N,N,N}  (100 bytes)
+    l -> {Arial,12,Black,N,N,N}  (100 bytes)
+    o -> {Arial,12,Black,N,N,N}  (100 bytes)
+    h -> {Arial,12,Black,N,N,N}  (100 bytes)  DUPLICATE!
+    e -> {Arial,12,Black,N,N,N}  (100 bytes)  DUPLICATE!
+    l -> {Arial,12,Black,N,N,N}  (100 bytes)  DUPLICATE!
+    l -> {Arial,12,Black,N,N,N}  (100 bytes)  DUPLICATE!
+    o -> {Arial,12,Black,N,N,N}  (100 bytes)  DUPLICATE!
+    Total style memory: 10 * 100 = **1,000 bytes**"
+
+    "**WITH Flyweight:**
+    Cache: {Arial,12,Black,N,N,N} -> StyleObj#1
+    h -> pointer to StyleObj#1  (8 bytes)
+    e -> pointer to StyleObj#1  (8 bytes)
+    l -> pointer to StyleObj#1  (8 bytes)
+    ...all 10 -> pointer to StyleObj#1
+    Total: 1 * 100 + 10 * 8 = **180 bytes**
+    **Savings: 82%**"
+
+    "At scale (50,000 chars, 20 unique styles):
+    Without: 50,000 * 100 = 5,000,000 bytes (5 MB)
+    With:    20 * 100 + 50,000 * 8 = 402,000 bytes (400 KB)
+    **Savings: 92%**"
+end note
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "User types text. Each character has a position
+    (extrinsic) and a style (intrinsic). **CharacterStyleFactory**
+    caches unique styles — 50,000 characters share ~20 style objects.
+    **Flyweight Pattern** = share immutable intrinsic state,
+    store unique extrinsic state separately."
+
+    "Supporting patterns: **Command** (undo/redo for style changes
+    + insert/delete), **Strategy** (text alignment + rendering).
+    The Flyweight is the star — explain the intrinsic/extrinsic
+    split and the memory math."
+end note
+
+
+' ====================================================================
+'  LAYOUT
+' ====================================================================
+CharacterStyleFactory -[hidden]down-> FLYWEIGHT_CONCEPT
+FLYWEIGHT_CONCEPT -[hidden]down-> MEMORY
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Point |
+    | 1 | Document: addCharacter(), applyStyle(), render() | Entry Point | Uses CharacterStyleFactory for all styles |
+    | 2 | Document -> Page -> Row -> Character (extrinsic: char + position) | Composition | Character holds pointer to shared style |
+    | 3 | CharacterStyle: font, size, color, bold, italic (intrinsic, immutable) | Flyweight Object | Shared, never duplicated, never mutated |
+    | 4 | Factory: getStyle() returns cached object or creates new one | Flyweight Factory | Cache key = font+size+color+bold+italic |
+    | 5 | Intrinsic (shared style) vs Extrinsic (unique char+position) | Core Concept | The split that enables sharing |
+    | 6 | ApplyStyle / InsertChar / DeleteChar commands with undo | Command | Ctrl+Z support |
+    | 7 | LeftAlign / Center / Justify / RightAlign formatting | Strategy | Pluggable text alignment |
+    | 8 | Screen / Print / PDF rendering | Strategy | Pluggable output |
+    |  |  |  |  |
+    | **50,000 chars, 20 unique styles: WITHOUT Flyweight = 5 MB. WITH Flyweight = 400 KB. 92% savings.** |  |  |
+endlegend
+
+@enduml

@@ -1,0 +1,631 @@
+@startuml BankApplication_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Bank Application - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Customer opens account, deposits money, transfers to another account, transaction logged, notifications sent."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class BankingService <<Facade>> {
+    - accounts : Map<String, Account>
+    - customers : Map<String, Customer>
+    - transactionService : TransactionService
+    - notificationService : NotificationService
+    - interestService : InterestService
+    - auditLog : AuditLog
+    --
+    + openAccount(customer, type, deposit) : Account
+    + closeAccount(accountId) : void
+    + deposit(accountId, amount) : Transaction
+    + withdraw(accountId, amount) : Transaction
+    + transfer(fromId, toId, amount) : Transaction
+    + getBalance(accountId) : double
+    + getStatement(accountId, from, to) : List<Transaction>
+    + applyInterest(accountId) : void
+}
+
+note top of BankingService #BBDEFB
+    **STEP 1 - Start here.**
+    "Customer walks into a bank (or opens
+    the app). BankingService is the **Facade**
+    — single API for account management,
+    deposits, withdrawals, transfers, and
+    statements. Hides all internal services."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CUSTOMER MODEL
+' ====================================================================
+class Customer {
+    - customerId : String
+    - name : String
+    - email : String
+    - phone : String
+    - address : Address
+    - kycStatus : KYCStatus
+    - accounts : List<Account>
+    --
+    + isVerified() : boolean
+    + getAccounts() : List<Account>
+}
+
+class Address {
+    - street : String
+    - city : String
+    - state : String
+    - zipCode : String
+    - country : String
+}
+
+enum KYCStatus {
+    PENDING
+    VERIFIED
+    REJECTED
+    EXPIRED
+}
+
+note top of Customer #C8E6C9
+    **STEP 2 - Who is the customer?**
+    "Customer has name, contact, address,
+    KYC status. Must be VERIFIED before
+    opening accounts. One customer can
+    have multiple accounts (savings,
+    current, fixed deposit)."
+end note
+
+Customer *-- Address
+Customer --> KYCStatus
+BankingService --> Customer : manages >
+
+
+' ====================================================================
+'  STEP 3: ACCOUNT HIERARCHY — Factory Method
+' ====================================================================
+abstract class Account {
+    - accountId : String
+    - accountNumber : String
+    - customer : Customer
+    - balance : double
+    - status : AccountStatus
+    - type : AccountType
+    - createdAt : LocalDateTime
+    - observers : List<AccountObserver>
+    --
+    + deposit(amount) : void
+    + withdraw(amount) : void
+    + getBalance() : double
+    + {abstract} getInterestRate() : double
+    + {abstract} getMinBalance() : double
+    + {abstract} getWithdrawalLimit() : double
+    + registerObserver(obs) : void
+    + notifyObservers(event) : void
+}
+
+class SavingsAccount {
+    - interestRate : double
+    - minBalance : double
+    - monthlyWithdrawalLimit : int
+    - withdrawalsThisMonth : int
+    --
+    + getInterestRate() : double
+    + getMinBalance() : double
+    + getWithdrawalLimit() : double
+    + canWithdraw() : boolean
+}
+
+class CurrentAccount {
+    - overdraftLimit : double
+    --
+    + getInterestRate() : double
+    + getMinBalance() : double
+    + getWithdrawalLimit() : double
+    + getAvailableBalance() : double
+}
+
+class FixedDepositAccount {
+    - principal : double
+    - interestRate : double
+    - maturityDate : LocalDate
+    - termMonths : int
+    - penaltyPercent : double
+    --
+    + getInterestRate() : double
+    + getMinBalance() : double
+    + getWithdrawalLimit() : double
+    + isMatured() : boolean
+    + getMaturityAmount() : double
+    + prematureWithdrawalPenalty() : double
+}
+
+enum AccountType {
+    SAVINGS
+    CURRENT
+    FIXED_DEPOSIT
+    RECURRING_DEPOSIT
+}
+
+enum AccountStatus {
+    ACTIVE
+    FROZEN
+    CLOSED
+    DORMANT
+}
+
+note top of Account #FFE0B2
+    **STEP 3 - Account hierarchy.**
+    "Abstract **Account** defines the contract.
+    Concrete types have different rules:
+    **Savings**: interest rate, min balance,
+    monthly withdrawal limit.
+    **Current**: overdraft, no interest.
+    **FixedDeposit**: locked term, penalty
+    for early withdrawal."
+
+    "Each type overrides getInterestRate(),
+    getMinBalance(), getWithdrawalLimit().
+    **Factory** creates the right subclass."
+    **Pattern: Factory Method | OCP, LSP**
+end note
+
+Account <|-- SavingsAccount
+Account <|-- CurrentAccount
+Account <|-- FixedDepositAccount
+Account --> AccountType
+Account --> AccountStatus
+Account --> Customer : owned by >
+
+
+class AccountFactory <<Factory>> {
+    --
+    + {static} createAccount(type, customer, deposit) : Account
+}
+
+note bottom of AccountFactory #FFE0B2
+    **Factory Method.**
+    "AccountFactory.createAccount(SAVINGS, cust, 5000)
+    returns a SavingsAccount with correct rules.
+    Add RecurringDeposit? One new class + one
+    factory case. Client code unchanged."
+    **Pattern: Factory | OCP**
+end note
+
+AccountFactory --> Account : creates >
+BankingService --> AccountFactory : uses >
+
+
+' ====================================================================
+'  STEP 4: TRANSACTION + COMMAND PATTERN
+' ====================================================================
+class Transaction {
+    - transactionId : String
+    - type : TransactionType
+    - amount : double
+    - fromAccount : Account
+    - toAccount : Account
+    - timestamp : LocalDateTime
+    - status : TransactionStatus
+    - description : String
+    - referenceNumber : String
+    --
+    + isSuccessful() : boolean
+    + getAmount() : double
+}
+
+enum TransactionType {
+    DEPOSIT
+    WITHDRAWAL
+    TRANSFER
+    INTEREST_CREDIT
+    PENALTY_DEBIT
+    FEE
+}
+
+enum TransactionStatus {
+    PENDING
+    COMPLETED
+    FAILED
+    REVERSED
+}
+
+interface TransactionCommand <<Command>> {
+    + execute() : Transaction
+    + undo() : Transaction
+    + validate() : boolean
+}
+
+class DepositCommand {
+    - account : Account
+    - amount : double
+    --
+    + execute() : Transaction
+    + undo() : Transaction
+    + validate() : boolean
+}
+
+class WithdrawCommand {
+    - account : Account
+    - amount : double
+    --
+    + execute() : Transaction
+    + undo() : Transaction
+    + validate() : boolean
+}
+
+class TransferCommand {
+    - fromAccount : Account
+    - toAccount : Account
+    - amount : double
+    --
+    + execute() : Transaction
+    + undo() : Transaction
+    + validate() : boolean
+}
+
+note top of TransactionCommand #FFCDD2
+    **STEP 4 - Deposit / Withdraw / Transfer.**
+    "Each operation is a **Command** object.
+    Why? Commands can be **validated** before
+    execution, **undone** (reversal), **logged**
+    (audit trail), and **queued** (batch)."
+
+    "DepositCommand: add to balance.
+    WithdrawCommand: check limit, deduct.
+    TransferCommand: withdraw from A + deposit to B
+    atomically. undo() reverses the operation."
+    **Pattern: Command | SRP, OCP**
+end note
+
+TransactionCommand <|.. DepositCommand
+TransactionCommand <|.. WithdrawCommand
+TransactionCommand <|.. TransferCommand
+TransactionCommand --> Transaction : produces >
+Transaction --> TransactionType
+Transaction --> TransactionStatus
+
+
+' ====================================================================
+'  STEP 5: TRANSACTION SERVICE — Executor
+' ====================================================================
+class TransactionService {
+    - validators : List<TransactionValidator>
+    - auditLog : AuditLog
+    --
+    + executeTransaction(command) : Transaction
+    + reverseTransaction(transactionId) : Transaction
+    + getHistory(accountId, from, to) : List<Transaction>
+}
+
+interface TransactionValidator <<Strategy>> {
+    + validate(command) : ValidationResult
+}
+
+class BalanceValidator {
+    + validate(command) : ValidationResult
+}
+
+class DailyLimitValidator {
+    - dailyLimit : double
+    --
+    + validate(command) : ValidationResult
+}
+
+class FraudDetectionValidator {
+    - maxSingleTransaction : double
+    --
+    + validate(command) : ValidationResult
+}
+
+class AccountStatusValidator {
+    + validate(command) : ValidationResult
+}
+
+class ValidationResult {
+    - valid : boolean
+    - errorMessage : String
+}
+
+note bottom of TransactionValidator #FFCDD2
+    **STEP 5 - Validate before executing.**
+    "**Strategy Pattern** — validation rules
+    are pluggable. Checked in sequence:"
+
+    "1. **AccountStatusValidator**: is account active?
+    2. **BalanceValidator**: sufficient funds?
+    3. **DailyLimitValidator**: within daily cap?
+    4. **FraudDetectionValidator**: suspicious amount?"
+
+    "All must pass. Add KYCValidator? One class.
+    Chain of validators, each independent."
+    **Pattern: Strategy (Chain) | OCP, SRP**
+end note
+
+TransactionValidator <|.. BalanceValidator
+TransactionValidator <|.. DailyLimitValidator
+TransactionValidator <|.. FraudDetectionValidator
+TransactionValidator <|.. AccountStatusValidator
+TransactionService o--> TransactionValidator : validates with >
+TransactionService --> TransactionCommand : executes >
+TransactionValidator --> ValidationResult
+BankingService --> TransactionService
+
+
+' ====================================================================
+'  STEP 6: INTEREST CALCULATION — Strategy Pattern
+' ====================================================================
+interface InterestStrategy <<Strategy>> {
+    + calculateInterest(account, days) : double
+}
+
+class SimpleInterestStrategy {
+    + calculateInterest(account, days) : double
+}
+
+class CompoundInterestStrategy {
+    - compoundingFrequency : int
+    --
+    + calculateInterest(account, days) : double
+}
+
+class TieredInterestStrategy {
+    - tiers : List<InterestTier>
+    --
+    + calculateInterest(account, days) : double
+}
+
+class InterestTier {
+    - minBalance : double
+    - maxBalance : double
+    - rate : double
+}
+
+class InterestService {
+    - strategyMap : Map<AccountType, InterestStrategy>
+    --
+    + calculateInterest(account) : double
+    + applyInterest(account) : Transaction
+    + setStrategy(type, strategy) : void
+}
+
+note bottom of InterestStrategy #D1C4E9
+    **STEP 6 - Interest calculation.**
+    "Different accounts earn interest differently.
+    **Strategy Pattern:**
+    **SimpleInterest**: P * R * T / 100 (Savings).
+    **CompoundInterest**: quarterly compounding (FD).
+    **TieredInterest**: higher rate for higher balance."
+
+    "InterestService maps AccountType to Strategy.
+    Savings -> Simple, FD -> Compound.
+    Change Savings to Tiered? Swap one mapping."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+InterestStrategy <|.. SimpleInterestStrategy
+InterestStrategy <|.. CompoundInterestStrategy
+InterestStrategy <|.. TieredInterestStrategy
+TieredInterestStrategy o--> InterestTier
+InterestService --> InterestStrategy : delegates >
+BankingService --> InterestService
+
+
+' ====================================================================
+'  STEP 7: OBSERVER — Notifications + Audit
+' ====================================================================
+interface AccountObserver <<Observer>> {
+    + onAccountEvent(account, event) : void
+}
+
+class TransactionAlertObserver {
+    - notificationService : NotificationService
+    --
+    + onAccountEvent(account, event) : void
+}
+
+class LowBalanceObserver {
+    - threshold : double
+    --
+    + onAccountEvent(account, event) : void
+}
+
+class FraudAlertObserver {
+    --
+    + onAccountEvent(account, event) : void
+}
+
+class AuditLogObserver {
+    - auditLog : AuditLog
+    --
+    + onAccountEvent(account, event) : void
+}
+
+class AuditLog {
+    - entries : List<AuditEntry>
+    --
+    + log(entry) : void
+    + getEntries(accountId, from, to) : List<AuditEntry>
+}
+
+class AuditEntry {
+    - timestamp : LocalDateTime
+    - accountId : String
+    - action : String
+    - performedBy : String
+    - details : String
+}
+
+note bottom of AccountObserver #B2EBF2
+    **STEP 7 - Everyone gets notified.**
+    "On every transaction/account event,
+    Account calls notifyObservers().
+    **Observer Pattern**:"
+
+    "**TransactionAlert**: 'Rs 5000 debited'.
+    **LowBalanceObserver**: warns if below threshold.
+    **FraudAlertObserver**: flags suspicious activity.
+    **AuditLogObserver**: logs every action for
+    compliance (RBI/regulatory requirement)."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+AccountObserver <|.. TransactionAlertObserver
+AccountObserver <|.. LowBalanceObserver
+AccountObserver <|.. FraudAlertObserver
+AccountObserver <|.. AuditLogObserver
+Account --> AccountObserver : notifies >
+AuditLogObserver --> AuditLog : writes to >
+AuditLog *-- AuditEntry
+BankingService --> AuditLog
+
+
+' ====================================================================
+'  NOTIFICATION — Strategy Pattern
+' ====================================================================
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(customer, message) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class EmailNotification {
+    + send(recipient, message) : void
+}
+
+class SMSNotification {
+    + send(recipient, message) : void
+}
+
+class PushNotification {
+    + send(recipient, message) : void
+}
+
+NotificationStrategy <|.. EmailNotification
+NotificationStrategy <|.. SMSNotification
+NotificationStrategy <|.. PushNotification
+NotificationService --> NotificationStrategy : delegates >
+TransactionAlertObserver --> NotificationService : uses >
+BankingService --> NotificationService
+
+
+' ====================================================================
+'  STEP 8: ACCOUNT STATE — State Pattern
+' ====================================================================
+interface AccountState <<State>> {
+    + deposit(account, amount) : void
+    + withdraw(account, amount) : void
+    + freeze(account) : void
+    + close(account) : void
+    + activate(account) : void
+}
+
+class ActiveState {
+    + deposit(account, amount) : void
+    + withdraw(account, amount) : void
+    + freeze(account) : void
+    + close(account) : void
+}
+
+class FrozenState {
+    + deposit(account, amount) : void
+    + activate(account) : void
+    + close(account) : void
+}
+
+class DormantState {
+    + deposit(account, amount) : void
+    + activate(account) : void
+    + close(account) : void
+}
+
+class ClosedState {
+    ' terminal
+}
+
+note bottom of AccountState #FFCDD2
+    **STEP 8 - Account lifecycle.**
+    "**State Pattern** — accounts have states too.
+    **Active**: can deposit, withdraw, freeze, close.
+    **Frozen**: can only deposit (court order/fraud).
+    **Dormant**: inactive 2+ years, can reactivate.
+    **Closed**: terminal."
+
+    "FrozenState.withdraw() throws error.
+    No if-else in Account. Each state
+    enforces its own rules."
+    Active -> Frozen -> Active
+    Active -> Dormant -> Active
+    Active/Dormant -> Closed
+    **Pattern: State | SRP, OCP**
+end note
+
+AccountState <|.. ActiveState
+AccountState <|.. FrozenState
+AccountState <|.. DormantState
+AccountState <|.. ClosedState
+Account --> AccountState : delegates >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Customer opens account via **Factory** (Savings/Current/FD).
+    Deposits money via **DepositCommand** (**Command Pattern**). Transfers to
+    friend via **TransferCommand** — validated by chained validators
+    (**Strategy**). Transaction logged by **AuditLogObserver**, customer
+    alerted by **TransactionAlertObserver** (**Observer**). Interest calculated
+    by **InterestStrategy** (Simple/Compound/Tiered). Account lifecycle
+    managed by **State Pattern** (Active/Frozen/Dormant/Closed).
+    7 patterns: **Facade, Factory, Command, Strategy (x3), State, Observer**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Customer calls BankingService (deposit/withdraw/transfer) | Facade | SRP, DIP |
+    | 2 | Customer with KYC, address, multiple accounts | -- | SRP |
+    | 3 | Account hierarchy: Savings / Current / FixedDeposit | Factory Method | OCP, LSP |
+    | 4 | Each operation is a Command: execute(), undo(), validate() | Command | SRP, OCP |
+    | 5 | Validators: balance, daily limit, fraud, account status | Strategy (chain) | OCP, SRP |
+    | 6 | Interest: simple / compound / tiered per account type | Strategy | OCP, DIP |
+    | 7 | Transaction alert, low balance, fraud alert, audit log | Observer + Strategy | OCP, SRP |
+    | 8 | Account: Active -> Frozen -> Dormant -> Closed | State | SRP, OCP |
+    |  |  |  |  |
+    | **Account Mgmt** = Steps 2-3,8 | **Transactions** = Steps 4-5 | **Interest + Notify** = Steps 6-7 |  |
+endlegend
+
+@enduml

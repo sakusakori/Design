@@ -1,0 +1,639 @@
+@startuml OfflineDownloadManager_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Offline Download Manager for Social Media App (Annotated for Interview)</size>\n<size:11>Trace: "User saves a reel for offline. Manager queues it, picks download strategy, downloads, retries on failure, notifies user."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class DownloadManager <<Singleton>> {
+    - {static} instance : DownloadManager
+    - downloadQueue : DownloadQueue
+    - executor : DownloadExecutor
+    - storageManager : StorageManager
+    - networkMonitor : NetworkMonitor
+    - notificationService : NotificationService
+    - retryPolicy : RetryPolicy
+    --
+    + {static} getInstance() : DownloadManager
+    + download(request) : DownloadTask
+    + pauseTask(taskId) : void
+    + resumeTask(taskId) : void
+    + cancelTask(taskId) : void
+    + pauseAll() : void
+    + resumeAll() : void
+    + getActiveDownloads() : List<DownloadTask>
+    + getDownloadHistory() : List<DownloadTask>
+    + setMaxConcurrent(count) : void
+}
+
+note top of DownloadManager #BBDEFB
+    **STEP 1 - Start here.**
+    "User long-presses a reel and taps
+    'Save Offline'. Client calls
+    DownloadManager.download(request).
+    **Singleton** — one manager per app.
+    Coordinates queue, executor, storage,
+    network monitoring, and retry."
+    **Patterns: Facade + Singleton | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CONTENT MODEL — What are we downloading?
+' ====================================================================
+class DownloadRequest {
+    - contentId : String
+    - contentType : ContentType
+    - url : String
+    - quality : QualityPreference
+    - userId : String
+    - requestedAt : LocalDateTime
+    --
+    + getEstimatedSize() : long
+    + getContentType() : ContentType
+}
+
+class MediaContent {
+    - contentId : String
+    - type : ContentType
+    - title : String
+    - thumbnailUrl : String
+    - author : String
+    - durationSeconds : int
+    - availableQualities : List<QualityPreference>
+    --
+    + getBestQuality(networkType) : QualityPreference
+}
+
+enum ContentType {
+    REEL
+    VIDEO
+    IMAGE
+    STORY
+    CAROUSEL
+    AUDIO
+}
+
+enum QualityPreference {
+    LOW_360P
+    MEDIUM_480P
+    HIGH_720P
+    FULL_HD_1080P
+    ORIGINAL
+    AUTO
+}
+
+note top of DownloadRequest #C8E6C9
+    **STEP 2 - What's being downloaded?**
+    "**DownloadRequest**: what content, what URL,
+    what quality, who requested it.
+    **MediaContent**: metadata — type (REEL/VIDEO/
+    IMAGE/STORY), title, duration, available
+    qualities. **AUTO** quality adapts to
+    current network."
+end note
+
+DownloadRequest --> ContentType
+DownloadRequest --> QualityPreference
+MediaContent --> ContentType
+MediaContent --> QualityPreference
+
+
+' ====================================================================
+'  STEP 3: DOWNLOAD TASK + STATE PATTERN
+' ====================================================================
+class DownloadTask {
+    - taskId : String
+    - request : DownloadRequest
+    - content : MediaContent
+    - currentState : TaskState
+    - status : TaskStatus
+    - progress : DownloadProgress
+    - priority : DownloadPriority
+    - filePath : String
+    - createdAt : LocalDateTime
+    - completedAt : LocalDateTime
+    - retryCount : int
+    - observers : List<DownloadObserver>
+    --
+    + start() : void
+    + pause() : void
+    + resume() : void
+    + cancel() : void
+    + fail(error) : void
+    + complete(filePath) : void
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+    + getProgress() : DownloadProgress
+}
+
+class DownloadProgress {
+    - totalBytes : long
+    - downloadedBytes : long
+    - speedBytesPerSec : long
+    - startedAt : LocalDateTime
+    --
+    + getPercent() : double
+    + getEstimatedTimeRemaining() : long
+    + getFormattedSpeed() : String
+    + isComplete() : boolean
+}
+
+enum TaskStatus {
+    QUEUED
+    DOWNLOADING
+    PAUSED
+    COMPLETED
+    FAILED
+    CANCELLED
+}
+
+enum DownloadPriority {
+    LOW
+    NORMAL
+    HIGH
+    USER_INITIATED
+}
+
+note top of DownloadTask #FFCDD2
+    **STEP 3 - DownloadTask is the central object.**
+    "Each download becomes a DownloadTask with
+    state, progress (bytes/speed/ETA), priority,
+    and retry count. Uses **State Pattern**
+    (lifecycle) and **Observer Pattern**
+    (progress updates to UI)."
+end note
+
+DownloadTask --> DownloadRequest : for >
+DownloadTask --> MediaContent : downloads >
+DownloadTask --> TaskStatus
+DownloadTask --> DownloadPriority
+DownloadTask *-- DownloadProgress : tracks >
+
+
+' ====================================================================
+'  STEP 4: STATE PATTERN — Task Lifecycle
+' ====================================================================
+interface TaskState <<State>> {
+    + start(task) : void
+    + pause(task) : void
+    + resume(task) : void
+    + cancel(task) : void
+    + fail(task, error) : void
+    + complete(task, path) : void
+}
+
+class QueuedState {
+    + start(task) : void
+    + cancel(task) : void
+}
+
+class DownloadingState {
+    + pause(task) : void
+    + cancel(task) : void
+    + fail(task, error) : void
+    + complete(task, path) : void
+}
+
+class PausedState {
+    + resume(task) : void
+    + cancel(task) : void
+}
+
+class CompletedState {
+    ' terminal — file saved
+}
+
+class FailedState {
+    + resume(task) : void
+    + cancel(task) : void
+}
+
+class CancelledState {
+    ' terminal — cleanup done
+}
+
+note bottom of TaskState #FFCDD2
+    **STEP 4 - Task lifecycle.**
+    "**State Pattern** — each state is a class.
+    **Queued**: waiting in queue, can start/cancel.
+    **Downloading**: active, can pause/fail/complete.
+    **Paused**: user paused or network lost, can resume.
+    **Failed**: error occurred, can retry (resume).
+    **Completed/Cancelled**: terminal."
+
+    Queued -> Downloading -> Completed
+    Downloading -> Paused -> Downloading
+    Downloading -> Failed -> Downloading (retry)
+    Any -> Cancelled
+    **Pattern: State | SRP, OCP**
+end note
+
+TaskState <|.. QueuedState
+TaskState <|.. DownloadingState
+TaskState <|.. PausedState
+TaskState <|.. CompletedState
+TaskState <|.. FailedState
+TaskState <|.. CancelledState
+DownloadTask --> TaskState : delegates >
+
+
+' ====================================================================
+'  STEP 5: DOWNLOAD QUEUE — Priority Queue
+' ====================================================================
+class DownloadQueue {
+    - queue : PriorityQueue<DownloadTask>
+    - maxConcurrent : int
+    - activeCount : int
+    --
+    + enqueue(task) : void
+    + dequeueNext() : DownloadTask
+    + peek() : DownloadTask
+    + remove(taskId) : void
+    + reprioritize(taskId, priority) : void
+    + getQueueSize() : int
+    + getActiveCount() : int
+}
+
+note bottom of DownloadQueue #C8E6C9
+    **STEP 5 - Queue with priorities.**
+    "Downloads don't all start at once.
+    PriorityQueue orders by DownloadPriority.
+    USER_INITIATED > HIGH > NORMAL > LOW.
+    maxConcurrent limits parallel downloads
+    (e.g., 3 at a time). When one finishes,
+    next in queue starts automatically."
+end note
+
+DownloadManager --> DownloadQueue : manages >
+DownloadQueue o--> DownloadTask : queues >
+
+
+' ====================================================================
+'  STEP 6: DOWNLOAD STRATEGY — Strategy Pattern (CORE)
+' ====================================================================
+interface DownloadStrategy <<Strategy>> {
+    + download(url, destPath, progressCallback) : void
+    + supportsResume() : boolean
+    + getChunkSize() : int
+}
+
+class SimpleDownloadStrategy {
+    --
+    + download(url, destPath, progressCallback) : void
+    + supportsResume() : boolean
+}
+
+class ChunkedDownloadStrategy {
+    - chunkSizeBytes : int
+    - parallelChunks : int
+    --
+    + download(url, destPath, progressCallback) : void
+    + supportsResume() : boolean
+}
+
+class StreamingDownloadStrategy {
+    - bufferSizeBytes : int
+    --
+    + download(url, destPath, progressCallback) : void
+    + supportsResume() : boolean
+}
+
+class DownloadExecutor {
+    - strategySelector : DownloadStrategySelector
+    - activeDownloads : Map<String, Thread>
+    --
+    + execute(task) : void
+    + cancelExecution(taskId) : void
+    + isExecuting(taskId) : boolean
+}
+
+class DownloadStrategySelector {
+    --
+    + selectStrategy(content, network) : DownloadStrategy
+}
+
+note bottom of DownloadStrategy #FFE0B2
+    **STEP 6 - How to actually download? (KEY STEP)**
+    "**Strategy Pattern** — download mechanism
+    is pluggable."
+
+    "**SimpleDownload**: single HTTP GET, for images.
+    **ChunkedDownload**: splits into parallel chunks
+    with resume support — for large videos.
+    **StreamingDownload**: progressive, low-memory
+    — for reels/stories."
+
+    "**StrategySelector** auto-picks based on
+    content type + network: WiFi -> Chunked
+    parallel, Mobile -> Simple sequential."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+DownloadStrategy <|.. SimpleDownloadStrategy
+DownloadStrategy <|.. ChunkedDownloadStrategy
+DownloadStrategy <|.. StreamingDownloadStrategy
+DownloadExecutor --> DownloadStrategySelector : uses >
+DownloadStrategySelector --> DownloadStrategy : selects >
+DownloadManager --> DownloadExecutor : delegates >
+
+
+' ====================================================================
+'  STEP 7: NETWORK MONITOR — Observer Pattern
+' ====================================================================
+class NetworkMonitor {
+    - currentType : NetworkType
+    - isConnected : boolean
+    - observers : List<NetworkObserver>
+    --
+    + getCurrentType() : NetworkType
+    + isConnected() : boolean
+    + isOnWifi() : boolean
+    + getEstimatedBandwidth() : long
+    + registerObserver(obs) : void
+    - onNetworkChanged(newType) : void
+}
+
+interface NetworkObserver <<Observer>> {
+    + onNetworkChange(oldType, newType, connected) : void
+}
+
+class AutoPauseHandler <<ConcreteObserver>> {
+    - wifiOnlyMode : boolean
+    --
+    + onNetworkChange(oldType, newType, connected) : void
+}
+
+class QualityAdaptHandler <<ConcreteObserver>> {
+    --
+    + onNetworkChange(oldType, newType, connected) : void
+}
+
+enum NetworkType {
+    WIFI
+    MOBILE_4G
+    MOBILE_5G
+    MOBILE_3G
+    OFFLINE
+}
+
+note bottom of NetworkObserver #B2EBF2
+    **STEP 7 - React to network changes.**
+    "Social media app — user moves from WiFi
+    to mobile data. **Observer Pattern**."
+
+    "**AutoPauseHandler**: if wifiOnlyMode=true,
+    pause all downloads when WiFi lost.
+    Resume when WiFi returns.
+    **QualityAdaptHandler**: downgrade quality
+    from 1080p to 480p on slow network."
+
+    "Network lost entirely? Pause all.
+    Reconnected? Resume automatically."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+NetworkObserver <|.. AutoPauseHandler
+NetworkObserver <|.. QualityAdaptHandler
+NetworkMonitor --> NetworkObserver : notifies >
+NetworkMonitor --> NetworkType
+DownloadManager --> NetworkMonitor : monitors >
+
+
+' ====================================================================
+'  STEP 8: STORAGE MANAGER
+' ====================================================================
+class StorageManager {
+    - basePath : String
+    - maxStorageBytes : long
+    - evictionPolicy : EvictionPolicy
+    --
+    + getAvailableSpace() : long
+    + hasSpace(requiredBytes) : boolean
+    + saveToDisk(taskId, data, path) : String
+    + deleteFile(path) : void
+    + getOfflineContent() : List<MediaContent>
+    + getTotalUsed() : long
+    + evictIfNeeded(requiredBytes) : void
+}
+
+interface EvictionPolicy <<Strategy>> {
+    + selectForEviction(contents, bytesNeeded) : List<MediaContent>
+}
+
+class LRUEvictionPolicy {
+    --
+    + selectForEviction(contents, bytesNeeded) : List<MediaContent>
+}
+
+class SizeBasedEvictionPolicy {
+    --
+    + selectForEviction(contents, bytesNeeded) : List<MediaContent>
+}
+
+class OldestFirstEvictionPolicy {
+    --
+    + selectForEviction(contents, bytesNeeded) : List<MediaContent>
+}
+
+note bottom of EvictionPolicy #D1C4E9
+    **STEP 8 - Where does it go? Storage is finite.**
+    "Phone storage is limited. StorageManager
+    checks hasSpace() before downloading.
+    If full, **EvictionPolicy** decides what to remove."
+
+    "**Strategy Pattern** — eviction is pluggable.
+    **LRU**: remove least recently viewed.
+    **SizeBased**: remove largest files first.
+    **OldestFirst**: remove oldest downloads."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+EvictionPolicy <|.. LRUEvictionPolicy
+EvictionPolicy <|.. SizeBasedEvictionPolicy
+EvictionPolicy <|.. OldestFirstEvictionPolicy
+StorageManager --> EvictionPolicy : delegates >
+DownloadManager --> StorageManager : stores via >
+
+
+' ====================================================================
+'  STEP 9: RETRY POLICY
+' ====================================================================
+interface RetryPolicy <<Strategy>> {
+    + shouldRetry(task, error, attemptCount) : boolean
+    + getDelayMs(attemptCount) : long
+}
+
+class ExponentialBackoffRetry {
+    - maxRetries : int
+    - baseDelayMs : long
+    --
+    + shouldRetry(task, error, attemptCount) : boolean
+    + getDelayMs(attemptCount) : long
+}
+
+class FixedIntervalRetry {
+    - maxRetries : int
+    - intervalMs : long
+    --
+    + shouldRetry(task, error, attemptCount) : boolean
+    + getDelayMs(attemptCount) : long
+}
+
+class NoRetry {
+    + shouldRetry(task, error, attemptCount) : boolean
+    + getDelayMs(attemptCount) : long
+}
+
+note bottom of RetryPolicy #FFCDD2
+    **STEP 9 - Handle failures gracefully.**
+    "Network drops mid-download. What now?"
+
+    "**Strategy Pattern** — retry logic is pluggable.
+    **ExponentialBackoff**: 1s, 2s, 4s, 8s (avoids
+    server hammering). **FixedInterval**: every 5s.
+    **NoRetry**: fail immediately (user-cancelled)."
+
+    "ChunkedDownload supports resume from
+    last byte — no re-downloading."
+    **Pattern: Strategy | OCP**
+end note
+
+RetryPolicy <|.. ExponentialBackoffRetry
+RetryPolicy <|.. FixedIntervalRetry
+RetryPolicy <|.. NoRetry
+DownloadManager --> RetryPolicy : uses >
+
+
+' ====================================================================
+'  STEP 10: DOWNLOAD OBSERVER — Progress + Notifications
+' ====================================================================
+interface DownloadObserver <<Observer>> {
+    + onProgressUpdate(task) : void
+    + onStateChange(task, oldState, newState) : void
+}
+
+class UIProgressObserver {
+    --
+    + onProgressUpdate(task) : void
+    + onStateChange(task, oldState, newState) : void
+}
+
+class NotificationBarObserver {
+    --
+    + onProgressUpdate(task) : void
+    + onStateChange(task, oldState, newState) : void
+}
+
+class AnalyticsObserver {
+    --
+    + onProgressUpdate(task) : void
+    + onStateChange(task, oldState, newState) : void
+}
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notifyComplete(task) : void
+    + notifyFailed(task) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(title, message) : void
+}
+
+class SystemNotification {
+    + send(title, message) : void
+}
+
+class InAppToast {
+    + send(title, message) : void
+}
+
+note bottom of DownloadObserver #B2EBF2
+    **STEP 10 - Keep the user informed.**
+    "**Observer Pattern** — on progress/state change:"
+
+    "**UIProgressObserver**: updates the progress
+    bar in the downloads screen (% + speed).
+    **NotificationBarObserver**: shows system
+    notification with progress.
+    **AnalyticsObserver**: logs download metrics
+    (speed, success rate, content type)."
+
+    "Notification channel via **Strategy**:
+    SystemNotification vs InAppToast."
+    **Patterns: Observer + Strategy | OCP, SRP**
+end note
+
+DownloadObserver <|.. UIProgressObserver
+DownloadObserver <|.. NotificationBarObserver
+DownloadObserver <|.. AnalyticsObserver
+DownloadTask --> DownloadObserver : notifies >
+NotificationStrategy <|.. SystemNotification
+NotificationStrategy <|.. InAppToast
+NotificationService --> NotificationStrategy
+DownloadManager --> NotificationService
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "User saves a reel -> DownloadManager queues it with
+    priority -> Queue pops it when slot opens -> StrategySelector picks
+    ChunkedDownload for video on WiFi -> Download progresses, observer
+    updates UI -> Network drops? AutoPauseHandler pauses, resumes on
+    reconnect -> Failure? ExponentialBackoff retries -> Storage full?
+    LRU eviction frees space -> Complete: file saved, user notified.
+    5 patterns: **Singleton/Facade**, **Strategy** (x4), **State**, **Observer** (x2)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | User taps 'Save Offline', calls DownloadManager | Facade + Singleton | SRP, DIP |
+    | 2 | DownloadRequest: content type, URL, quality preference | -- | SRP |
+    | 3 | DownloadTask created with state, progress, priority | -- | SRP |
+    | 4 | Queued -> Downloading -> Paused -> Completed / Failed | State | SRP, OCP |
+    | 5 | PriorityQueue: USER_INITIATED > HIGH > NORMAL > LOW | -- | SRP |
+    | 6 | Simple / Chunked / Streaming download strategy (auto-selected) | Strategy | OCP, DIP |
+    | 7 | Network lost: auto-pause. WiFi back: auto-resume. Quality adapts | Observer | OCP, SRP |
+    | 8 | Storage full: LRU / SizeBased / OldestFirst eviction | Strategy | OCP, DIP |
+    | 9 | Failure: exponential backoff retry, resume from last byte | Strategy | OCP |
+    | 10 | UI progress bar, notification bar, analytics all updated | Observer + Strategy | OCP, SRP |
+    |  |  |  |  |
+    | **Queue + Execute** = Steps 5-6 | **Lifecycle** = Step 4 | **Resilience** = Steps 7,9 | **Storage** = Step 8 |
+endlegend
+
+@enduml

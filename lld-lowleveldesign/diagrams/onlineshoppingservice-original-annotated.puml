@@ -1,0 +1,441 @@
+@startuml OnlineShoppingSystem_Original_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+    HeaderBackgroundColor #27AE60
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Online Shopping System - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Customer registers, searches product, adds to cart, places order, pays, tracks delivery."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — OnlineShoppingSystem
+' ====================================================================
+class OnlineShoppingSystem {
+    - customers : Map<String, Customer>
+    - orders : Map<String, Order>
+    - products : Map<String, Product>
+    - paymentService : PaymentService
+    - orderService : OrderService
+    - searchService : SearchService
+    --
+    + {static} getInstance() : OnlineShoppingSystem
+    + registerCustomer(name, email, addr) : Customer
+    + placeOrder(customerId, String, PaymentStrategy) : Order
+    + searchProducts(query) : List
+    + getShoppingCart(customerId) : ShoppingCart
+}
+
+note top of OnlineShoppingSystem #BBDEFB
+    **STEP 1 - Start here.**
+    "Client only talks to this class.
+    It's the **Facade** — hides OrderService,
+    PaymentService, SearchService behind
+    one clean API. Customer registers,
+    then searches for a product."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CUSTOMER + ACCOUNT + ADDRESS
+' ====================================================================
+class Customer {
+    - id : String
+    - name : String
+    - email : String
+    - account : Account
+    - shippingAddress : Address
+    - orders : List<Order>
+    --
+    + updateProfile() : void
+    + getOrderHistory() : List<Order>
+}
+
+class Account {
+    - username : String
+    - password : String
+    - cart : ShoppingCart
+}
+
+class Address {
+    - street : String
+    - city : String
+    - state : String
+    - zipCode : String
+    - country : String
+}
+
+note left of Customer #C8E6C9
+    **STEP 2 - Customer model.**
+    "Customer has Account (auth)
+    and Address (shipping).
+    Account holds ShoppingCart.
+    Each class = one job." **(SRP)**
+end note
+
+Customer *-- Account : has >
+Customer *-- Address : lives at >
+
+
+' ====================================================================
+'  STEP 3: PRODUCT + DECORATOR
+' ====================================================================
+interface Product <<Interface>> {
+    + getId() : String
+    + getName() : String
+    + getPrice() : double
+    + getCategory() : ProductCategory
+    + getDescription() : String
+}
+
+class BaseProduct {
+    - id : String
+    - name : String
+    - price : double
+    - description : String
+    - category : ProductCategory
+}
+
+enum ProductCategory {
+    CLOTHING
+    ELECTRONICS
+    GROCERY
+    BOOKS
+}
+
+abstract class ProductDecorator {
+    # wrappedProduct : Product
+    --
+    + getName() : String
+    + getPrice() : double
+}
+
+class GiftWrapDecorator {
+    - wrapCost : double
+    - wrapDescription : String
+    --
+    + getPrice() : double
+    + getDescription() : String
+}
+
+note bottom of ProductDecorator #FFE0B2
+    **STEP 3 - Customer picks a product.**
+    "Wants gift wrap? Instead of subclass
+    explosion (GiftWrappedElectronics...),
+    **Decorator** adds cost at runtime:
+    new GiftWrapDecorator(baseProduct).
+    Composable, extensible."
+    **Pattern: Decorator | OCP**
+end note
+
+Product <|.. BaseProduct
+Product <|.. ProductDecorator
+ProductDecorator o--> Product : wraps >
+ProductDecorator <|-- GiftWrapDecorator
+BaseProduct --> ProductCategory : categorized by >
+
+
+' ====================================================================
+'  SEARCH SERVICE
+' ====================================================================
+class SearchService {
+    - productCatalog : Collection<Product>
+    --
+    + searchByName(query) : List<Product>
+    + searchByCategory(cat) : List<Product>
+    + filterByPriceRange(min, max) : List<Product>
+}
+
+SearchService --> Product : searches >
+
+
+' ====================================================================
+'  STEP 4: SHOPPING CART
+' ====================================================================
+class ShoppingCart {
+    - items : Map<String, CartItem>
+    --
+    + addItem(product, qty) : void
+    + removeItem(productId) : void
+    + getItems() : Map<String, CartItem>
+    + clearCart() : void
+    + getTotal() : double
+}
+
+class CartItem {
+    - quantity : int
+    - product : Product
+    --
+    + getSubtotal() : double
+}
+
+note left of ShoppingCart #E1BEE7
+    **STEP 4 - Adds to cart.**
+    "Customer adds (decorated) product.
+    Cart holds CartItems. On checkout,
+    cart items become OrderLineItems."
+end note
+
+ShoppingCart *-- CartItem : contains >
+CartItem --> Product : references >
+Account --> ShoppingCart : owns >
+
+
+' ====================================================================
+'  STEP 5: ORDER + SERVICES
+' ====================================================================
+class Order {
+    - id : String
+    - customer : Customer
+    - status : OrderStatus
+    - currentState : OrderState
+    - shippingAddress : Address
+    - items : List<OrderLineItem>
+    - orderDate : LocalDateTime
+    - observers : List<OrderObserver>
+    --
+    + shipOrder() : void
+    + deliverOrder() : void
+    + cancelOrder() : void
+    + registerObserver(o) : void
+    + notifyObservers() : void
+}
+
+class OrderLineItem {
+    - quantity : int
+    - price : double
+    - product : Product
+    --
+    + getLineTotal() : double
+}
+
+enum OrderStatus {
+    PLACED
+    SHIPPED
+    PENDING_PAYMENT
+    DELIVERED
+    CANCELLED
+    RETURNED
+}
+
+note top of Order #FFCDD2
+    **STEP 5 - Order created.**
+    "OrderService validates stock, creates
+    Order. This is the **central object**.
+    It uses **State** (lifecycle) and
+    **Observer** (notifications)."
+end note
+
+Order *-- OrderLineItem : contains >
+Order --> OrderStatus : tracks >
+OrderLineItem --> Product : for >
+Customer --> Order : places >
+
+class OrderService {
+    - inventoryService : InventoryService
+    --
+    + createOrder(customer, items) : Order
+    + validateOrder(order) : boolean
+}
+
+class InventoryService {
+    - stock : Map<String, Integer>
+    --
+    + checkStock(productId) : boolean
+    + updateStock(productId, qty) : void
+    + addStock(productId, qty) : void
+}
+
+OrderService --> InventoryService : checks stock >
+OrderService --> Order : creates >
+
+
+' ====================================================================
+'  STEP 6: STATE PATTERN
+' ====================================================================
+interface OrderState <<State>> {
+    + handleOrder(order) : void
+    + shipOrder(order) : void
+    + deliverOrder(order) : void
+    + cancelOrder(order) : void
+}
+
+class PlacedState {
+    + handleOrder(order) : void
+    + shipOrder(order) : void
+    + cancelOrder(order) : void
+}
+
+class ShippedState {
+    + deliverOrder(order) : void
+    + cancelOrder(order) : void
+}
+
+class DeliveredState {
+    + handleOrder(order) : void
+}
+
+class CancelledState {
+    + handleOrder(order) : void
+}
+
+note bottom of OrderState #FFCDD2
+    **STEP 6 - State transitions.**
+    "**State Pattern** — each state is a class.
+    No if-else chains in Order.
+    PlacedState: can ship or cancel.
+    ShippedState: can deliver or cancel.
+    Delivered/Cancelled = terminal."
+    Placed -> Shipped -> Delivered
+    Placed/Shipped -> Cancelled
+    **Pattern: State | SRP, OCP**
+end note
+
+OrderState <|.. PlacedState
+OrderState <|.. ShippedState
+OrderState <|.. DeliveredState
+OrderState <|.. CancelledState
+Order --> OrderState : delegates lifecycle >
+
+
+' ====================================================================
+'  STEP 7: OBSERVER PATTERN
+' ====================================================================
+interface Subject <<Observable>> {
+    + registerObserver(o) : void
+    + removeObserver(o) : void
+    + notifyObservers() : void
+}
+
+interface OrderObserver <<Observer>> {
+    + update(order) : void
+}
+
+class EmailNotificationObserver {
+    - emailAddress : String
+    --
+    + update(order) : void
+}
+
+class PushNotificationObserver {
+    - deviceToken : String
+    --
+    + update(order) : void
+}
+
+note left of Subject #B2EBF2
+    **STEP 7 - Notifications.**
+    "On every state change, Order
+    calls notifyObservers().
+    **Observer Pattern** — Order doesn't
+    know how to send email/push.
+    Add SMS? One new observer.
+    Order unchanged."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+Order ..|> Subject
+Subject --> OrderObserver : notifies >
+OrderObserver <|.. EmailNotificationObserver
+OrderObserver <|.. PushNotificationObserver
+
+
+' ====================================================================
+'  STEP 8: PAYMENT — Strategy
+' ====================================================================
+class PaymentService {
+    --
+    + processPayment(strategy, amount) : boolean
+}
+
+interface PaymentStrategy <<Strategy>> {
+    + pay(amount) : boolean
+}
+
+class CreditCardPaymentStrategy {
+    - cardNumber : String
+    - expiryDate : String
+    --
+    + pay(amount) : boolean
+}
+
+class UpiPaymentStrategy {
+    - upiId : String
+    --
+    + pay(amount) : boolean
+}
+
+note right of PaymentStrategy #D1C4E9
+    **STEP 8 - Customer pays.**
+    "How they pay varies. **Strategy
+    Pattern** — PaymentService delegates
+    to PaymentStrategy interface.
+    CreditCard, UPI are swappable.
+    Add PayPal? One new class."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+PaymentService --> PaymentStrategy : delegates >
+PaymentStrategy <|.. CreditCardPaymentStrategy
+PaymentStrategy <|.. UpiPaymentStrategy
+
+
+' ====================================================================
+'  FACADE RELATIONSHIPS
+' ====================================================================
+OnlineShoppingSystem --> Customer : manages >
+OnlineShoppingSystem --> OrderService : uses >
+OnlineShoppingSystem --> PaymentService : uses >
+OnlineShoppingSystem --> SearchService : uses >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "We traced a full journey: register -> search
+    -> decorate (gift wrap) -> cart -> order -> state transitions
+    -> notifications -> payment. **5 patterns**: Facade, Decorator,
+    State, Observer, Strategy. Each solves a real problem."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Customer visits, registers via Facade | Facade | SRP, DIP |
+    | 2 | Customer / Account / Address models | -- | SRP |
+    | 3 | Searches product, adds gift wrap | Decorator | OCP |
+    | 4 | Adds to ShoppingCart | -- | SRP |
+    | 5 | Places order, stock validated, Order created | -- | SRP |
+    | 6 | Order: Placed -> Shipped -> Delivered / Cancelled | State | SRP, OCP |
+    | 7 | On state change, email/push observers notified | Observer | OCP, SRP |
+    | 8 | Payment via CreditCard / UPI strategy | Strategy | OCP, DIP, LSP |
+endlegend
+
+@enduml

@@ -1,0 +1,381 @@
+@startuml BookMyShow_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Book My Show - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "User selects city, browses movies, picks theatre+show, selects seats, books with payment, gets booking confirmation."</size>
+
+
+' ====================================================================
+'  STEP 1: CONTROLLERS — Facade Pattern
+' ====================================================================
+class BookingController <<Facade>> {
+    - bookingService : BookingService
+    --
+    + createBooking(user, show, seats) : Booking*
+    + getBooking(bookingId) : Booking*
+    + getBookingsForUser(user) : vector<Booking*>
+}
+
+class TheatreController <<Facade>> {
+    - theatreService : TheatreService
+    --
+    + addTheatre(theatre) : void
+    + getMovies(city, date) : set<Movie*>
+    + getTheatres(city, movie, date) : vector<Theatre*>
+    + getShows(movie, date, theatre) : vector<Show*>
+}
+
+note top of BookingController #BBDEFB
+    **STEP 1 - Start here.**
+    "User opens the app. Two **Facade** controllers
+    handle all client interaction:
+    **TheatreController**: browse movies, theatres, shows.
+    **BookingController**: create/retrieve bookings."
+
+    "Controllers delegate everything to services.
+    Client never touches BookingService or
+    TheatreService directly."
+    **Pattern: Facade (MVC Controller) | SRP, DIP**
+end note
+
+BookingController --> BookingService : delegates >
+TheatreController --> TheatreService : delegates >
+
+
+' ====================================================================
+'  STEP 2: USER + MOVIE MODELS
+' ====================================================================
+class User {
+    - userId : string
+    - name : string
+    --
+    + getUserId() : string
+    + getName() : string
+}
+
+class Movie {
+    - name : string
+    --
+    + getName() : string
+}
+
+note top of User #C8E6C9
+    **STEP 2 - Who is booking? What movie?**
+    "**User** has userId and name.
+    **Movie** has a name (e.g., BAAHUBALI).
+    Simple value objects. Could extend
+    with email, phone, duration, genre."
+end note
+
+
+' ====================================================================
+'  STEP 3: THEATRE HIERARCHY — Composition
+' ====================================================================
+class Theatre {
+    - name : string
+    - city : City
+    - screens : vector<Screen*>
+    --
+    + getCity() : City
+    + getName() : string
+    + getScreens() : vector<Screen*>&
+}
+
+class Screen {
+    - screenId : int
+    - seats : vector<Seat*>
+    - showsByDate : map<string, vector<Show*>>
+    --
+    + getSeats() : vector<Seat*>&
+    + addShow(show) : void
+    + getShows(date) : vector<Show*>
+}
+
+class Seat {
+    - seatId : int
+    - category : SeatCategory
+    --
+    + getSeatId() : int
+}
+
+enum City {
+    BANGALORE
+    DELHI
+}
+
+enum SeatCategory {
+    SILVER
+    GOLD
+    PLATINUM
+}
+
+note top of Theatre #C8E6C9
+    **STEP 3 - The venue hierarchy.**
+    "**Theatre** is in a City, has multiple Screens.
+    **Screen** has Seats and Shows organized by date.
+    **Seat** has an id and category (SILVER/GOLD/
+    PLATINUM for pricing tiers)."
+
+    "Composition: Theatre *-- Screen *-- Seat.
+    A theatre like 'INOX Bangalore' has Screen 1
+    with 20 seats, showing BAAHUBALI at 10am."
+    **Composition over Inheritance**
+end note
+
+Theatre --> City
+Theatre *-- Screen : has screens >
+Screen *-- Seat : has seats >
+Seat --> SeatCategory
+
+
+' ====================================================================
+'  STEP 4: SHOW — Thread-Safe Seat Locking (KEY STEP)
+' ====================================================================
+class Show {
+    - movie : Movie*
+    - showDate : LocalDate
+    - startTime : LocalTime
+    - seatStatusMap : map<int, SeatStatus>
+    - seatLocks : map<int, mutex*>
+    --
+    + getMovie() : Movie*
+    + getShowDate() : LocalDate
+    + getStartTime() : LocalTime
+    + lockSeats(seatIds) : bool
+    + confirmSeats(seatIds) : void
+    + releaseSeats(seatIds) : void
+}
+
+class LocalDate {
+    + year : int
+    + month : int
+    + day : int
+    --
+    + toString() : string
+    + plusDays(d) : LocalDate
+    + operator<() : bool
+    + operator==() : bool
+}
+
+class LocalTime {
+    + hour : int
+    + minute : int
+    --
+    + toString() : string
+}
+
+enum SeatStatus {
+    AVAILABLE
+    LOCKED
+    BOOKED
+}
+
+note top of Show #FFCDD2
+    **STEP 4 - The Show class. (KEY STEP)**
+    "Show links a Movie to a Screen at a date/time.
+    It owns the **seatStatusMap** — the source
+    of truth for which seats are available."
+
+    "**Thread-Safe Seat Locking** (critical):
+    lockSeats() uses a 4-phase protocol:
+    1. **Acquire** locks (sorted by seatId
+       to prevent deadlock!)
+    2. **Validate** all seats are AVAILABLE
+    3. **Mark** all as LOCKED atomically
+    4. **Release** mutex locks"
+
+    "**State Machine**: AVAILABLE -> LOCKED -> BOOKED
+    LOCKED -> AVAILABLE (if payment fails)
+    No two users can book the same seat."
+    **Pattern: Mutex-based Concurrency | Thread Safety**
+end note
+
+Show --> Movie : for movie >
+Show --> LocalDate : on date >
+Show --> LocalTime : at time >
+Show --> SeatStatus : tracks per seat >
+Screen --> Show : schedules >
+
+
+' ====================================================================
+'  STEP 5: BOOKING + PAYMENT
+' ====================================================================
+class Booking {
+    - bookingId : int
+    - user : User*
+    - show : Show*
+    - seats : vector<int>
+    - payment : Payment*
+    --
+    + getBookingId() : int
+    + getUser() : User*
+    + getPayment() : Payment*
+}
+
+class Payment {
+    - paymentId : int
+    - status : PaymentStatus
+    --
+    + getPaymentId() : int
+    + getStatus() : PaymentStatus
+}
+
+enum PaymentStatus {
+    SUCCESS
+    FAILED
+}
+
+note top of Booking #D1C4E9
+    **STEP 5 - Booking confirmed.**
+    "**Booking** ties together: User + Show
+    + selected seat IDs + Payment.
+    bookingId generated randomly."
+
+    "**Payment** tracks status: SUCCESS or FAILED.
+    If payment FAILED, seats are RELEASED
+    back to AVAILABLE. If SUCCESS, seats
+    move from LOCKED to BOOKED."
+end note
+
+Booking --> User : booked by >
+Booking --> Show : for show >
+Booking --> Payment : paid via >
+Payment --> PaymentStatus
+
+
+' ====================================================================
+'  STEP 6: BOOKING SERVICE — Business Logic
+' ====================================================================
+class BookingService {
+    - bookings : map<int, Booking*>
+    --
+    + book(user, show, seats) : Booking*
+    + getBooking(bookingId) : Booking*
+    + getBookingsForUser(user) : vector<Booking*>
+}
+
+note top of BookingService #FFCDD2
+    **STEP 6 - The booking flow. (KEY STEP)**
+    "BookingService.book() is where it all
+    comes together:"
+
+    "1. Call show->lockSeats(seatIds)
+       (thread-safe, mutex-protected)
+    2. If lock fails -> throw 'seats unavailable'
+    3. Create Payment (process payment)
+    4. If payment SUCCESS:
+       -> show->confirmSeats() (LOCKED->BOOKED)
+       -> create Booking, store in map, return
+    5. If payment FAILED:
+       -> show->releaseSeats() (LOCKED->AVAILABLE)
+       -> throw 'payment failed'"
+
+    "Atomic: lock -> pay -> confirm/release.
+    No partial booking possible."
+    **Pattern: Service Layer + Repository**
+end note
+
+BookingService --> Booking : creates >
+BookingService --> Payment : creates >
+BookingService --> Show : locks seats >
+
+
+' ====================================================================
+'  STEP 7: THEATRE SERVICE — Query Layer
+' ====================================================================
+class TheatreService {
+    - cityTheatres : map<City, vector<Theatre*>>
+    --
+    + addTheatre(theatre) : void
+    + getMovies(city, date) : set<Movie*>
+    + getTheatres(city, movie, date) : vector<Theatre*>
+    + getShows(movie, date, theatre) : vector<Show*>
+}
+
+note top of TheatreService #C8E6C9
+    **STEP 7 - Browse and search.**
+    "TheatreService manages the catalog:
+    1. **getMovies(BANGALORE, today)**: returns
+       all movies showing in Bangalore today.
+    2. **getTheatres(BANGALORE, BAAHUBALI, today)**:
+       which theatres are showing this movie?
+    3. **getShows(BAAHUBALI, today, INOX)**:
+       what showtimes are available?"
+
+    "Data indexed by City for fast lookup.
+    Traverses: City -> Theatres -> Screens
+    -> Shows -> Movie to build results."
+    **Pattern: Repository (in-memory)**
+end note
+
+TheatreService --> Theatre : manages >
+TheatreService --> City : indexed by >
+
+
+' ====================================================================
+'  COMPLETE FLOW CONNECTIONS
+' ====================================================================
+User --> Booking : makes >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "User selects BANGALORE -> TheatreController.getMovies()
+    returns [BAAHUBALI, AVENGERS] -> user picks BAAHUBALI ->
+    getTheatres() returns [INOX] -> getShows() returns [10am, 2pm] ->
+    user picks 10am show -> selects seats [1,2,3] -> BookingController
+    .createBooking() -> BookingService.book() -> Show.lockSeats()
+    acquires mutex locks, validates AVAILABLE, marks LOCKED -> payment
+    processed -> SUCCESS -> confirmSeats() marks BOOKED -> Booking
+    returned with ID."
+
+    "Key patterns: **Facade** (controllers), **Service Layer** (business
+    logic), **Repository** (data access), **Thread-safe locking** (mutex
+    + sorted lock acquisition + 4-phase protocol), **Composition**
+    (Theatre->Screen->Seat, Show->Movie), **MVC** (architecture)."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= Key Design Point |
+    | 1 | User calls TheatreController / BookingController | Facade (MVC) | Controllers delegate to services |
+    | 2 | User and Movie — simple domain objects | -- | Value objects |
+    | 3 | Theatre has Screens has Seats (SILVER/GOLD/PLATINUM) | Composition | Hierarchical venue model |
+    | 4 | Show owns seatStatusMap + mutex locks per seat | Thread-safe locking | Sorted locks prevent deadlock |
+    | 5 | Booking ties User + Show + Seats + Payment | -- | Payment gates LOCKED->BOOKED |
+    | 6 | BookingService: lock -> pay -> confirm/release atomically | Service + Repository | No partial bookings |
+    | 7 | TheatreService: browse movies/theatres/shows by city+date | Repository | City-indexed catalog |
+    |  |  |  |  |
+    | **Browse** = Steps 1,7 (city->movies->theatres->shows) | **Book** = Steps 4,6 (lock->pay->confirm) | **Concurrency** = Step 4 (mutex) |  |
+endlegend
+
+@enduml

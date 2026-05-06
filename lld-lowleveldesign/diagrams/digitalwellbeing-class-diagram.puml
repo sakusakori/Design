@@ -1,0 +1,429 @@
+@startuml DigitalWellbeingSystem_ClassDiagram
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 40
+skinparam ranksep 35
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor White
+    BorderColor #333333
+    FontSize 11
+}
+
+title <size:20>Digital Wellbeing System</size>\n<size:13>Trace one user action: "User opens Instagram, uses it 30 min, closes it." Follow Step 1 to 7.</size>
+
+
+' ====================================================================
+'  STEP 1: ENTRY POINT — Facade
+' ====================================================================
+package "Entry Point" as FM #E8EAF6 {
+
+    class DigitalWellbeingSystem <<Facade>> {
+        - tracker : ScreenTimeTracker
+        - statsService : UsageStatisticsService
+        - retentionMgr : DataRetentionManager
+        - repository : UsageRepository
+        --
+        + initialize() : void
+        + onAppOpened(pkg) : void
+        + onAppClosed(pkg) : void
+        + getUsageStats() : UsageReport
+        + getTodayScreenTime() : long
+        + getDailyUsage(app) : DailyUsageSummary
+        + setDailyLimit(app, min) : void
+        + shutdown() : void
+    }
+}
+
+note top of FM #BBDEFB
+    **STEP 1 - Start here.**
+    "User opens Instagram. The OS calls
+    our system. The client only talks to
+    this **Facade** class. It delegates
+    onAppOpened('com.instagram') down
+    to the tracker."
+    **Pattern: Facade** | **(SRP, DIP)**
+end note
+
+
+' ====================================================================
+'  STEP 2: TRACKER — Singleton
+' ====================================================================
+package "Tracking" as TM #E3F2FD {
+
+    class ScreenTimeTracker <<Singleton>> {
+        - {static} instance : ScreenTimeTracker
+        - activeSessions : Map
+        - observers : List
+        - repository : UsageRepository
+        --
+        - ScreenTimeTracker(repository)
+        + {static} getInstance() : ScreenTimeTracker
+        + onAppOpened(app) : void
+        + onAppClosed(app) : void
+        + getActiveSession(app) : UsageSession
+        - notifyObservers(event) : void
+    }
+
+    class UsageEvent {
+        - app : AppInfo
+        - eventType : EventType
+        - timestamp : long
+        - session : UsageSession
+    }
+
+    enum EventType {
+        APP_OPENED
+        APP_CLOSED
+        DAILY_LIMIT_REACHED
+    }
+
+    ScreenTimeTracker -down-> UsageEvent : fires >
+    UsageEvent -right-> EventType
+}
+
+note right of TM #BBDEFB
+    **STEP 2 - Tracker receives the call.**
+    "The Facade delegates to ScreenTimeTracker.
+    It's a **Singleton** — one instance per device,
+    otherwise sessions get double-counted."
+
+    "onAppOpened() creates a new UsageSession.
+    30 min later, user closes the app.
+    onAppClosed() ends the session,
+    computes duration, and fires a
+    UsageEvent. But who receives it?"
+    **Pattern: Singleton** | **(SRP)**
+end note
+
+
+' ====================================================================
+'  DOMAIN MODELS (referenced by tracker)
+' ====================================================================
+package "Domain Models" as DM #E8F5E9 {
+
+    class AppInfo {
+        - packageName : String
+        - displayName : String
+        - category : AppCategory
+        --
+        + getPackageName() : String
+        + getDisplayName() : String
+    }
+
+    enum AppCategory {
+        SOCIAL_MEDIA
+        PRODUCTIVITY
+        ENTERTAINMENT
+        GAMING
+        OTHER
+    }
+
+    class UsageSession {
+        - sessionId : String
+        - app : AppInfo
+        - startTime : long
+        - endTime : long
+        --
+        + getDurationMillis() : long
+        + isActive() : boolean
+        + endSession(endTime) : void
+    }
+
+    class DailyUsageSummary {
+        - date : LocalDate
+        - app : AppInfo
+        - totalTimeMillis : long
+        - sessionCount : int
+        - sessions : List
+        --
+        + getTotalMinutes() : int
+        + addSession(session) : void
+    }
+
+    AppInfo -right-> AppCategory
+    UsageSession --> AppInfo : for app >
+    DailyUsageSummary --> AppInfo : per app >
+    DailyUsageSummary o-- UsageSession : aggregates >
+}
+
+note left of DM #C8E6C9
+    "These are the core data models.
+    **AppInfo** = which app (Instagram).
+    **UsageSession** = one 30-min window.
+    **DailyUsageSummary** = all sessions
+    of one app rolled up for one day.
+    Pure data, no logic. **(SRP)**"
+end note
+
+
+' ====================================================================
+'  STEP 3: OBSERVERS — Observer Pattern
+' ====================================================================
+package "Observers" as OM #FFF3E0 {
+
+    interface UsageEventObserver <<Observer>> {
+        + onUsageEvent(event) : void
+    }
+
+    class PersistenceObserver <<ConcreteObserver>> {
+        - repository : UsageRepository
+        --
+        + onUsageEvent(event) : void
+    }
+
+    class StatisticsUpdateObserver <<ConcreteObserver>> {
+        - statsService : UsageStatisticsService
+        --
+        + onUsageEvent(event) : void
+    }
+
+    class UsageLimitObserver <<ConcreteObserver>> {
+        - dailyLimits : Map
+        - currentUsage : Map
+        --
+        + onUsageEvent(event) : void
+        + setDailyLimit(app, minutes) : void
+        - checkLimit(app) : void
+    }
+
+    UsageEventObserver <|.. PersistenceObserver
+    UsageEventObserver <|.. StatisticsUpdateObserver
+    UsageEventObserver <|.. UsageLimitObserver
+}
+
+note right of OM #FFE0B2
+    **STEP 3 - Event fans out to observers.**
+    "The tracker doesn't save data or update UI
+    itself. That would be tight coupling.
+    Instead it calls notifyObservers()."
+
+    "Three observers react independently:
+    1. **PersistenceObserver** -> saves to disk
+    2. **StatisticsObserver** -> refreshes UI
+    3. **LimitObserver** -> checks daily cap"
+
+    "Want SMS alerts later? Add 1 observer.
+    Tracker code never changes."
+    **Pattern: Observer** | **(OCP, SRP)**
+end note
+
+
+' ====================================================================
+'  STEP 4: PERSISTENCE — Repository + Strategy
+' ====================================================================
+package "Persistence" as PM #FFEBEE {
+
+    interface UsageRepository <<Repository>> {
+        + saveSession(session) : void
+        + getSessions(app, date) : List
+        + getDailySummary(app, date) : DailyUsageSummary
+        + getAllSummaries(start, end) : List
+        + deleteOlderThan(date) : void
+    }
+
+    class UsageRepositoryImpl {
+        - strategy : PersistenceStrategy
+        - retentionDays : int
+        --
+        + saveSession(session) : void
+        + getSessions(app, date) : List
+        + getDailySummary(app, date) : DailyUsageSummary
+        + getAllSummaries(start, end) : List
+        + deleteOlderThan(date) : void
+    }
+
+    interface PersistenceStrategy <<Strategy>> {
+        + write(key, data) : void
+        + read(key) : String
+        + delete(key) : void
+        + readRange(prefix, start, end) : List
+    }
+
+    class FilePersistenceStrategy <<ConcreteStrategy>> {
+        - baseDirectory : String
+    }
+
+    class SQLitePersistenceStrategy <<ConcreteStrategy>> {
+        - databasePath : String
+    }
+
+    class SharedPrefsPersistenceStrategy <<ConcreteStrategy>> {
+        - prefsName : String
+    }
+
+    UsageRepository <|.. UsageRepositoryImpl
+    UsageRepositoryImpl -right-> PersistenceStrategy : delegates >
+    PersistenceStrategy <|.. FilePersistenceStrategy
+    PersistenceStrategy <|.. SQLitePersistenceStrategy
+    PersistenceStrategy <|.. SharedPrefsPersistenceStrategy
+}
+
+note right of PM #FFCDD2
+    **STEP 4 - Data hits the persistence layer.**
+    "PersistenceObserver calls saveSession().
+    But it doesn't call SQLite directly."
+
+    "**Repository Pattern** — business logic
+    calls UsageRepository interface. It never
+    knows if it's SQLite, file, or cloud. **(DIP)**"
+
+    "**Strategy Pattern** — the actual storage
+    is pluggable. SQLite for prod,
+    InMemory for unit tests.
+    New backend = 1 new class. **(OCP, LSP)**"
+
+    "This is how data survives reboots."
+    **Patterns: Repository + Strategy**
+end note
+
+
+' ====================================================================
+'  STEP 5: STATISTICS — Builder
+' ====================================================================
+package "Statistics" as SM #F3E5F5 {
+
+    class UsageStatisticsService <<Service>> {
+        - repository : UsageRepository
+        --
+        + getTodayUsage(app) : DailyUsageSummary
+        + getWeeklyReport() : UsageReport
+        + getMostUsedApps(days) : List
+        + getAverageDaily(app) : int
+    }
+
+    class UsageReportBuilder <<Builder>> {
+        - startDate : LocalDate
+        - endDate : LocalDate
+        - summaries : List
+        --
+        + setDateRange(start, end) : UsageReportBuilder
+        + addDailySummary(s) : UsageReportBuilder
+        + build() : UsageReport
+    }
+
+    class UsageReport {
+        - startDate : LocalDate
+        - endDate : LocalDate
+        - totalScreenTimeMillis : long
+        - appBreakdown : Map
+        --
+        + getTotalHours() : double
+        + getDailyAverage() : double
+        + getAppBreakdown() : Map
+    }
+
+    UsageStatisticsService -right-> UsageReportBuilder : uses >
+    UsageReportBuilder -right-> UsageReport : builds >
+}
+
+note right of SM #E1BEE7
+    **STEP 5 - User checks screen time.**
+    "Later, the user opens the app to see
+    'how much time did I spend today?'
+    StatisticsService reads from repository
+    and builds a UsageReport."
+
+    "Report has 5+ fields. Instead of a
+    monster constructor, we use
+    **Builder Pattern**: setDateRange()
+    .addDailySummary().build()"
+    **Pattern: Builder** | **(SRP)**
+end note
+
+
+' ====================================================================
+'  STEP 6: RETENTION — 7-day cleanup
+' ====================================================================
+package "Retention" as RM #E0F7FA {
+
+    class DataRetentionManager <<Service>> {
+        - repository : UsageRepository
+        - retentionDays : int = 7
+        --
+        + purgeExpiredData() : void
+        + getRetentionWindow() : DateRange
+        + isWithinRetention(date) : boolean
+    }
+
+    class DateRange {
+        - startDate : LocalDate
+        - endDate : LocalDate
+        --
+        + contains(date) : boolean
+        + getDayCount() : int
+    }
+
+    DataRetentionManager -right-> DateRange : uses >
+}
+
+note right of RM #B2EBF2
+    **STEP 6 - Cleanup.**
+    "On every app startup, this manager calls
+    repo.deleteOlderThan(today - 7).
+    Keeps only last 7 days. Storage bounded.
+    Change to 30 days? One field." **(SRP)**
+end note
+
+
+' ====================================================================
+'  STEP 7: WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **STEP 7 - Wrap up.**
+    "To summarize, we traced one user action through the system:
+    **Facade** received it, **Singleton tracker** created a session,
+    **Observer** fanned out to 3 independent reactions,
+    **Repository + Strategy** persisted data durably,
+    **Builder** constructed the stats report,
+    and **Retention** enforces the 7-day window.
+    6 patterns, each solving a specific problem."
+end note
+
+
+' ====================================================================
+'  CROSS-MODULE RELATIONSHIPS
+' ====================================================================
+DigitalWellbeingSystem -down-> ScreenTimeTracker
+DigitalWellbeingSystem -down-> UsageStatisticsService
+DigitalWellbeingSystem -down-> DataRetentionManager
+
+ScreenTimeTracker --> UsageSession : creates >
+ScreenTimeTracker -down-> UsageEventObserver : notifies >
+
+PersistenceObserver -down-> UsageRepository : saves via >
+StatisticsUpdateObserver -down-> UsageStatisticsService : refreshes >
+UsageStatisticsService -down-> UsageRepository : reads from >
+DataRetentionManager -down-> UsageRepository : cleans >
+
+
+' ====================================================================
+'  LAYOUT HINTS
+' ====================================================================
+FM -[hidden]down-> TM
+FM -[hidden]down-> DM
+TM -[hidden]down-> OM
+OM -[hidden]down-> PM
+PM -[hidden]down-> SM
+SM -[hidden]down-> RM
+RM -[hidden]down-> WRAPUP
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Client calls Facade: onAppOpened() | Facade | SRP, DIP |
+    | 2 | Tracker creates session, fires event on close | Singleton | SRP |
+    | 3 | Observers react: save, refresh UI, check limits | Observer | OCP, SRP |
+    | 4 | Data persisted via Repository + swappable Strategy | Repository + Strategy | DIP, OCP, LSP |
+    | 5 | User checks stats, report built via Builder | Builder | SRP |
+    | 6 | On startup, data older than 7 days is purged | -- | SRP |
+    | 7 | Wrap up: 6 patterns, each solving one problem | -- | -- |
+    |  |  |  |  |
+    | **Track screen time** = Steps 1-3 | **Persist 7 days** = Steps 4+6 | **Display stats** = Step 5 |  |
+endlegend
+
+@enduml

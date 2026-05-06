@@ -1,0 +1,545 @@
+@startuml DigitalWellbeing_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Digital Wellbeing System (Annotated for Interview)</size>\n<size:11>Trace: "User opens Instagram at 10am, closes at 10:30am. Session tracked. Stats show 2hr total today. Data persisted 7 days."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class DigitalWellbeingService <<Singleton>> {
+    - {static} instance : DigitalWellbeingService
+    - tracker : ScreenTimeTracker
+    - statsService : UsageStatisticsService
+    - retentionManager : DataRetentionManager
+    - repository : UsageRepository
+    - notificationService : NotificationService
+    --
+    + {static} getInstance() : DigitalWellbeingService
+    + initialize() : void
+    + onAppOpened(packageName) : void
+    + onAppClosed(packageName) : void
+    + getUsageStats() : UsageReport
+    + getTodayScreenTime() : long
+    + getTodayUsage(app) : DailyUsageSummary
+    + getWeeklyReport() : UsageReport
+    + setDailyLimit(app, minutes) : void
+    + shutdown() : void
+}
+
+note top of DigitalWellbeingService #BBDEFB
+    **STEP 1 - Start here.**
+    "OS detects app open/close. Client calls
+    DigitalWellbeingService — **Singleton + Facade**.
+    Singleton because one tracker per device.
+    Facade hides tracker, persistence, stats,
+    retention behind one clean API."
+
+    "Two key APIs:
+    onAppOpened/Closed (write path)
+    getUsageStats (read path)"
+    **Patterns: Singleton + Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: CORE MODELS
+' ====================================================================
+class AppInfo {
+    - packageName : String
+    - displayName : String
+    - category : AppCategory
+    - iconPath : String
+    --
+    + getPackageName() : String
+    + getDisplayName() : String
+    + getCategory() : AppCategory
+}
+
+enum AppCategory {
+    SOCIAL_MEDIA
+    PRODUCTIVITY
+    ENTERTAINMENT
+    COMMUNICATION
+    GAMING
+    EDUCATION
+    HEALTH
+    OTHER
+}
+
+class UsageSession {
+    - sessionId : String
+    - app : AppInfo
+    - startTime : long
+    - endTime : long
+    --
+    + getDurationMillis() : long
+    + getDurationMinutes() : int
+    + isActive() : boolean
+    + endSession(endTime) : void
+}
+
+class DailyUsageSummary {
+    - date : LocalDate
+    - app : AppInfo
+    - totalTimeMillis : long
+    - sessionCount : int
+    - sessions : List<UsageSession>
+    - firstOpened : LocalDateTime
+    - lastClosed : LocalDateTime
+    --
+    + getTotalMinutes() : int
+    + getTotalHours() : double
+    + addSession(session) : void
+    + getSessionCount() : int
+}
+
+note top of AppInfo #C8E6C9
+    **STEP 2 - What are we tracking?**
+    "Three core models, each with one job:"
+
+    "**AppInfo** = which app (com.instagram,
+    display name, category like SOCIAL_MEDIA).
+    **UsageSession** = one open-to-close window.
+    User opens Instagram at 10am, closes at
+    10:30am — that's one 30-min session.
+    **DailyUsageSummary** = all sessions of
+    one app rolled up for one day.
+    'Instagram: 2hr 15min today, 8 sessions.'"
+
+    "Pure data. No business logic." **(SRP)**
+end note
+
+AppInfo --> AppCategory
+UsageSession --> AppInfo : for app >
+DailyUsageSummary --> AppInfo : per app >
+DailyUsageSummary o-- UsageSession : aggregates >
+
+
+' ====================================================================
+'  STEP 3: SCREEN TIME TRACKER (Singleton)
+' ====================================================================
+class ScreenTimeTracker {
+    - activeSessions : Map<String, UsageSession>
+    - observers : List<UsageEventObserver>
+    --
+    + onAppOpened(app) : void
+    + onAppClosed(app) : void
+    + getActiveSession(app) : UsageSession
+    + getActiveSessions() : Map<String, UsageSession>
+    + isAppActive(packageName) : boolean
+    - createSession(app) : UsageSession
+    - endSession(app) : UsageSession
+    - notifyObservers(event) : void
+}
+
+class UsageEvent {
+    - app : AppInfo
+    - eventType : EventType
+    - timestamp : long
+    - session : UsageSession
+    --
+    + getApp() : AppInfo
+    + getDuration() : long
+}
+
+enum EventType {
+    APP_OPENED
+    APP_CLOSED
+    DAILY_LIMIT_REACHED
+    SESSION_MILESTONE
+}
+
+note top of ScreenTimeTracker #BBDEFB
+    **STEP 3 - The tracking engine.**
+    "ScreenTimeTracker is the heart.
+    onAppOpened('com.instagram') creates
+    a new UsageSession with startTime=now.
+    onAppClosed() ends the session,
+    computes duration, and fires a
+    UsageEvent to all observers."
+
+    "activeSessions map tracks which apps
+    are currently open. One user might have
+    Instagram AND WhatsApp open simultaneously."
+end note
+
+ScreenTimeTracker --> UsageSession : creates >
+ScreenTimeTracker --> UsageEvent : fires >
+UsageEvent --> EventType
+DigitalWellbeingService --> ScreenTimeTracker
+
+
+' ====================================================================
+'  STEP 4: OBSERVERS — Observer Pattern (KEY)
+' ====================================================================
+interface UsageEventObserver <<Observer>> {
+    + onUsageEvent(event) : void
+}
+
+class PersistenceObserver <<ConcreteObserver>> {
+    - repository : UsageRepository
+    --
+    + onUsageEvent(event) : void
+}
+
+class StatisticsUpdateObserver <<ConcreteObserver>> {
+    - statsService : UsageStatisticsService
+    --
+    + onUsageEvent(event) : void
+}
+
+class UsageLimitObserver <<ConcreteObserver>> {
+    - dailyLimits : Map<String, Integer>
+    - currentUsage : Map<String, Long>
+    - notificationService : NotificationService
+    --
+    + onUsageEvent(event) : void
+    + setDailyLimit(app, minutes) : void
+    - checkLimit(app) : void
+}
+
+class CategoryTrackerObserver <<ConcreteObserver>> {
+    - categoryUsage : Map<AppCategory, Long>
+    --
+    + onUsageEvent(event) : void
+    + getCategoryBreakdown() : Map<AppCategory, Long>
+}
+
+note top of UsageEventObserver #FFE0B2
+    **STEP 4 - Session ends. Now what? (KEY STEP)**
+    "When user closes an app, multiple things
+    must happen. But the tracker should NOT
+    know about persistence, stats, or limits."
+
+    "**Observer Pattern** — tracker fires event,
+    4 observers react independently:"
+
+    "1. **PersistenceObserver** -> saves to storage
+    2. **StatisticsObserver** -> refreshes live stats
+    3. **LimitObserver** -> checks if daily cap hit,
+       alerts user '2hr Instagram limit reached!'
+    4. **CategoryTracker** -> updates per-category totals"
+
+    "Want parental controls? Add one observer.
+    Tracker code NEVER changes." **(OCP)**
+    **Pattern: Observer | OCP, SRP**
+end note
+
+UsageEventObserver <|.. PersistenceObserver
+UsageEventObserver <|.. StatisticsUpdateObserver
+UsageEventObserver <|.. UsageLimitObserver
+UsageEventObserver <|.. CategoryTrackerObserver
+ScreenTimeTracker --> UsageEventObserver : notifies >
+
+
+' ====================================================================
+'  STEP 5: PERSISTENCE — Repository + Strategy (KEY)
+' ====================================================================
+interface UsageRepository <<Repository>> {
+    + saveSession(session) : void
+    + getSessions(app, date) : List<UsageSession>
+    + getDailySummary(app, date) : DailyUsageSummary
+    + getAllSummaries(startDate, endDate) : List<DailyUsageSummary>
+    + deleteOlderThan(date) : void
+    + getTotalScreenTime(date) : long
+}
+
+class UsageRepositoryImpl {
+    - persistenceStrategy : PersistenceStrategy
+    --
+    + saveSession(session) : void
+    + getSessions(app, date) : List<UsageSession>
+    + getDailySummary(app, date) : DailyUsageSummary
+    + getAllSummaries(startDate, endDate) : List<DailyUsageSummary>
+    + deleteOlderThan(date) : void
+}
+
+interface PersistenceStrategy <<Strategy>> {
+    + write(key, data) : void
+    + read(key) : String
+    + delete(key) : void
+    + readRange(prefix, startKey, endKey) : List<String>
+}
+
+class SQLitePersistenceStrategy {
+    - databasePath : String
+    --
+    + write(key, data) : void
+    + read(key) : String
+    + delete(key) : void
+    + readRange(prefix, startKey, endKey) : List<String>
+}
+
+class FilePersistenceStrategy {
+    - baseDirectory : String
+    --
+    + write(key, data) : void
+    + read(key) : String
+    + delete(key) : void
+    + readRange(prefix, startKey, endKey) : List<String>
+}
+
+class SharedPrefsPersistenceStrategy {
+    - prefsName : String
+    --
+    + write(key, data) : void
+    + read(key) : String
+    + delete(key) : void
+    + readRange(prefix, startKey, endKey) : List<String>
+}
+
+class InMemoryPersistenceStrategy {
+    - store : Map<String, String>
+    --
+    + write(key, data) : void
+    + read(key) : String
+    + delete(key) : void
+    + readRange(prefix, startKey, endKey) : List<String>
+}
+
+note top of UsageRepository #FFCDD2
+    **STEP 5 - Where does data go? (KEY STEP)**
+    "Requirement: persist across device reboots.
+    Two patterns work together:"
+
+    "**Repository Pattern** — business logic calls
+    saveSession(). It NEVER knows if data goes
+    to SQLite, file, or cloud. **(DIP)**"
+
+    "**Strategy Pattern** — storage backend is
+    swappable at construction time:
+    **SQLite** for production (structured queries).
+    **File** for debugging/export.
+    **SharedPrefs** for lightweight config.
+    **InMemory** for unit tests (no disk I/O)."
+
+    "New storage (CloudSync)? One new class.
+    Nothing else changes." **(OCP, LSP)**
+    **Patterns: Repository + Strategy | DIP, OCP, LSP**
+end note
+
+UsageRepository <|.. UsageRepositoryImpl
+UsageRepositoryImpl --> PersistenceStrategy : delegates >
+PersistenceStrategy <|.. SQLitePersistenceStrategy
+PersistenceStrategy <|.. FilePersistenceStrategy
+PersistenceStrategy <|.. SharedPrefsPersistenceStrategy
+PersistenceStrategy <|.. InMemoryPersistenceStrategy
+PersistenceObserver --> UsageRepository : saves via >
+DigitalWellbeingService --> UsageRepository
+
+
+' ====================================================================
+'  STEP 6: STATISTICS + BUILDER
+' ====================================================================
+class UsageStatisticsService {
+    - repository : UsageRepository
+    --
+    + getTodayUsage(app) : DailyUsageSummary
+    + getTotalScreenTime(date) : long
+    + getWeeklyReport() : UsageReport
+    + getMostUsedApps(days, limit) : List<DailyUsageSummary>
+    + getAverageDailyUsage(app, days) : int
+    + getCategoryBreakdown(date) : Map<AppCategory, Long>
+    + getUsageTrend(app, days) : List<DailyUsageSummary>
+}
+
+class UsageReportBuilder <<Builder>> {
+    - startDate : LocalDate
+    - endDate : LocalDate
+    - summaries : List<DailyUsageSummary>
+    - totalScreenTime : long
+    --
+    + setDateRange(start, end) : UsageReportBuilder
+    + addDailySummary(summary) : UsageReportBuilder
+    + build() : UsageReport
+}
+
+class UsageReport {
+    - startDate : LocalDate
+    - endDate : LocalDate
+    - dailySummaries : List<DailyUsageSummary>
+    - totalScreenTimeMillis : long
+    - appBreakdown : Map<String, Long>
+    - categoryBreakdown : Map<AppCategory, Long>
+    - mostUsedApp : AppInfo
+    - averageDailyMinutes : int
+    --
+    + getTotalHours() : double
+    + getDailyAverage() : double
+    + getAppBreakdown() : Map<String, Long>
+    + getCategoryBreakdown() : Map<AppCategory, Long>
+    + getMostUsedApp() : AppInfo
+}
+
+note top of UsageReportBuilder #D1C4E9
+    **STEP 6 - Display usage statistics.**
+    "User opens 'Screen Time' to see weekly report.
+    UsageStatisticsService reads from repository."
+
+    "**Builder Pattern** — UsageReport has 8+ fields
+    (date range, summaries, totals, breakdown,
+    most used app, averages). Builder constructs
+    it step by step:"
+
+    "builder.setDateRange(mon, sun)
+      .addDailySummary(monSummary)
+      .addDailySummary(tueSummary)
+      ...
+      .build() // computes totals + averages"
+
+    "Service queries data. Builder constructs.
+    Report is immutable." **(SRP)**
+    **Pattern: Builder | SRP**
+end note
+
+UsageStatisticsService --> UsageReportBuilder : uses >
+UsageReportBuilder --> UsageReport : builds >
+UsageStatisticsService --> UsageRepository : reads from >
+StatisticsUpdateObserver --> UsageStatisticsService : refreshes >
+DigitalWellbeingService --> UsageStatisticsService
+
+
+' ====================================================================
+'  STEP 7: DATA RETENTION — 7-Day Window
+' ====================================================================
+class DataRetentionManager {
+    - repository : UsageRepository
+    - retentionDays : int
+    --
+    + purgeExpiredData() : void
+    + getRetentionWindow() : DateRange
+    + isWithinRetention(date) : boolean
+    + getRetentionDays() : int
+}
+
+class DateRange {
+    - startDate : LocalDate
+    - endDate : LocalDate
+    --
+    + contains(date) : boolean
+    + getDayCount() : int
+}
+
+note top of DataRetentionManager #B2EBF2
+    **STEP 7 - Keep only 7 days.**
+    "Requirement: persist data for last 7 days.
+    On every app startup, initialize() calls
+    retentionManager.purgeExpiredData()
+    which runs repo.deleteOlderThan(today - 7)."
+
+    "Storage stays bounded. Change to 30 days?
+    One field change." **(SRP)**
+
+    "Data survives reboots because Step 5
+    writes to durable storage (SQLite/file)."
+end note
+
+DataRetentionManager --> DateRange : defines window >
+DataRetentionManager --> UsageRepository : cleans >
+DigitalWellbeingService --> DataRetentionManager
+
+
+' ====================================================================
+'  STEP 8: NOTIFICATION — Strategy
+' ====================================================================
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notifyLimitReached(app, limit) : void
+    + notifyDailySummary(report) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(title, message) : void
+}
+
+class SystemNotification {
+    + send(title, message) : void
+}
+
+class InAppToast {
+    + send(title, message) : void
+}
+
+class SilentLog {
+    + send(title, message) : void
+}
+
+note bottom of NotificationStrategy #B2EBF2
+    **STEP 8 - Alert the user.**
+    "UsageLimitObserver detects '2hr Instagram
+    limit reached'. Notifies user via
+    **Strategy Pattern**: system notification,
+    in-app toast, or silent log."
+    **Pattern: Strategy | OCP**
+end note
+
+NotificationStrategy <|.. SystemNotification
+NotificationStrategy <|.. InAppToast
+NotificationStrategy <|.. SilentLog
+NotificationService --> NotificationStrategy : delegates >
+UsageLimitObserver --> NotificationService : alerts via >
+DigitalWellbeingService --> NotificationService
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "User opens Instagram -> DigitalWellbeingService
+    delegates to ScreenTimeTracker -> tracker creates UsageSession.
+    User closes -> session ends, UsageEvent fired -> 4 **Observers**
+    react: PersistenceObserver saves via **Repository + Strategy**
+    (SQLite survives reboots), StatisticsObserver refreshes stats,
+    LimitObserver checks cap, CategoryTracker updates breakdown.
+    User checks screen time -> **Builder** constructs UsageReport.
+    On startup -> DataRetentionManager purges data older than 7 days.
+    6 patterns: **Singleton, Facade, Observer, Repository, Strategy (x2), Builder**.
+    All 3 requirements met."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | OS detects app open/close, calls DigitalWellbeingService | Singleton + Facade | SRP, DIP |
+    | 2 | AppInfo, UsageSession (one open-close), DailyUsageSummary (per day) | -- | SRP |
+    | 3 | Tracker creates session on open, ends on close, fires event | -- | SRP |
+    | 4 | Observers: persist, refresh stats, check limit, track category | Observer | OCP, SRP |
+    | 5 | Repository abstracts storage. Strategy swaps SQLite/File/InMemory | Repository + Strategy | DIP, OCP, LSP |
+    | 6 | Builder constructs weekly UsageReport step-by-step | Builder | SRP |
+    | 7 | On startup, purge data older than 7 days | -- | SRP |
+    | 8 | Alert user when daily limit reached (system notif / toast) | Strategy | OCP |
+    |  |  |  |  |
+    | **Req: Track screen time** = Steps 2-4 | **Req: Display stats** = Step 6 | **Req: Persist 7 days** = Steps 5+7 |  |
+endlegend
+
+@enduml

@@ -1,0 +1,663 @@
+@startuml TrafficSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Traffic Management System (Annotated for Interview)</size>\n<size:11>Trace: "Signal turns green for Road A. Timer counts down. Sensor detects congestion. System adapts timing. Emergency vehicle approaching — override to green."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class TrafficManagementService <<Facade>> {
+    - intersections : Map<String, Intersection>
+    - centralController : CentralController
+    - emergencyHandler : EmergencyHandler
+    - sensorManager : SensorManager
+    - analyticsService : AnalyticsService
+    --
+    + addIntersection(intersection) : void
+    + startSystem() : void
+    + stopSystem() : void
+    + handleEmergency(vehicleId, route) : void
+    + getTrafficStatus(intersectionId) : IntersectionStatus
+    + overrideSignal(intersectionId, roadId, signal) : void
+    + getAnalytics(from, to) : TrafficReport
+}
+
+note top of TrafficManagementService #BBDEFB
+    **STEP 1 - Start here.**
+    "A city has multiple intersections, each
+    with traffic lights. TrafficManagementService
+    is the **Facade** — manages all intersections,
+    handles emergencies, collects analytics.
+    Traffic control center talks only to this."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: ROAD + INTERSECTION MODEL
+' ====================================================================
+class Intersection {
+    - intersectionId : String
+    - name : String
+    - location : Location
+    - roads : List<Road>
+    - signalController : SignalController
+    - sensors : List<TrafficSensor>
+    --
+    + getRoads() : List<Road>
+    + getSignalController() : SignalController
+    + getCurrentStatus() : IntersectionStatus
+}
+
+class Road {
+    - roadId : String
+    - name : String
+    - direction : Direction
+    - laneCount : int
+    - currentSignal : TrafficSignal
+    - vehicleQueue : int
+    - speedLimit : int
+    --
+    + getCurrentSignal() : TrafficSignal
+    + setSignal(signal) : void
+    + getVehicleQueue() : int
+    + getCongestionLevel() : CongestionLevel
+}
+
+class Location {
+    - latitude : double
+    - longitude : double
+    --
+    + distanceTo(other) : double
+}
+
+enum Direction {
+    NORTH
+    SOUTH
+    EAST
+    WEST
+    NORTH_EAST
+    NORTH_WEST
+    SOUTH_EAST
+    SOUTH_WEST
+}
+
+enum CongestionLevel {
+    FREE_FLOW
+    LIGHT
+    MODERATE
+    HEAVY
+    GRIDLOCK
+}
+
+note top of Intersection #C8E6C9
+    **STEP 2 - Physical layout.**
+    "**Intersection** is the core entity — a
+    junction where multiple Roads meet.
+    Each Road has a direction, lane count,
+    current signal state, and a vehicle queue
+    (how many cars are waiting).
+    CongestionLevel derived from queue length."
+end note
+
+Intersection *-- Road : has roads >
+Intersection --> Location
+Road --> Direction
+Road --> CongestionLevel
+
+
+' ====================================================================
+'  STEP 3: TRAFFIC SIGNAL — State Pattern
+' ====================================================================
+class TrafficLight {
+    - lightId : String
+    - road : Road
+    - currentState : TrafficSignalState
+    - signal : TrafficSignal
+    - remainingSeconds : int
+    - observers : List<SignalObserver>
+    --
+    + changeState(state) : void
+    + tick() : void
+    + getCurrentSignal() : TrafficSignal
+    + getRemainingSeconds() : int
+    + forceSignal(signal) : void
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+}
+
+enum TrafficSignal {
+    RED
+    YELLOW
+    GREEN
+    BLINKING_RED
+    BLINKING_YELLOW
+    OFF
+}
+
+interface TrafficSignalState <<State>> {
+    + onEnter(light) : void
+    + onTick(light) : void
+    + onExit(light) : void
+    + canTransitionTo(signal) : boolean
+    + getDuration() : int
+}
+
+class GreenState {
+    - durationSeconds : int
+    --
+    + onEnter(light) : void
+    + onTick(light) : void
+    + getDuration() : int
+    + canTransitionTo(signal) : boolean
+}
+
+class YellowState {
+    - durationSeconds : int
+    --
+    + onEnter(light) : void
+    + onTick(light) : void
+    + getDuration() : int
+    + canTransitionTo(signal) : boolean
+}
+
+class RedState {
+    - durationSeconds : int
+    --
+    + onEnter(light) : void
+    + onTick(light) : void
+    + getDuration() : int
+    + canTransitionTo(signal) : boolean
+}
+
+class BlinkingRedState {
+    + onEnter(light) : void
+    + onTick(light) : void
+    + canTransitionTo(signal) : boolean
+}
+
+class OffState {
+    + onEnter(light) : void
+    + onTick(light) : void
+    + canTransitionTo(signal) : boolean
+}
+
+note bottom of TrafficSignalState #FFCDD2
+    **STEP 3 - Signal lifecycle. (KEY STEP)**
+    "**State Pattern** — each signal color is
+    a class with its own behavior."
+
+    "**GreenState**: counts down durationSeconds.
+    When timer hits 0, transitions to Yellow.
+    **YellowState**: 3-5 seconds warning,
+    transitions to Red.
+    **RedState**: waits for controller to
+    grant green to this road.
+    **BlinkingRed**: malfunction / low traffic.
+    **Off**: system shutdown."
+
+    "canTransitionTo() enforces safety:
+    Green -> Yellow -> Red -> Green.
+    Green -> Red NEVER (must go through Yellow).
+    **Pattern: State | SRP, OCP**"
+end note
+
+TrafficSignalState <|.. GreenState
+TrafficSignalState <|.. YellowState
+TrafficSignalState <|.. RedState
+TrafficSignalState <|.. BlinkingRedState
+TrafficSignalState <|.. OffState
+TrafficLight --> TrafficSignalState : delegates >
+TrafficLight --> TrafficSignal
+TrafficLight --> Road : controls >
+Intersection *-- TrafficLight : has lights >
+
+
+' ====================================================================
+'  STEP 4: SIGNAL CONTROLLER — Timing Strategy
+' ====================================================================
+class SignalController {
+    - intersection : Intersection
+    - timingStrategy : TimingStrategy
+    - lights : Map<String, TrafficLight>
+    - currentPhase : int
+    - phases : List<SignalPhase>
+    --
+    + start() : void
+    + stop() : void
+    + tick() : void
+    + advancePhase() : void
+    + overridePhase(roadId, signal) : void
+    + setTimingStrategy(strategy) : void
+}
+
+class SignalPhase {
+    - greenRoadIds : Set<String>
+    - durationSeconds : int
+    --
+    + getGreenRoads() : Set<String>
+    + getDuration() : int
+}
+
+interface TimingStrategy <<Strategy>> {
+    + calculatePhaseDurations(intersection) : List<SignalPhase>
+}
+
+class FixedTimingStrategy {
+    - greenDuration : int
+    - yellowDuration : int
+    - redDuration : int
+    --
+    + calculatePhaseDurations(intersection) : List<SignalPhase>
+}
+
+class AdaptiveTimingStrategy {
+    - sensorManager : SensorManager
+    - minGreen : int
+    - maxGreen : int
+    --
+    + calculatePhaseDurations(intersection) : List<SignalPhase>
+}
+
+class PeakHourTimingStrategy {
+    - peakHourPhases : List<SignalPhase>
+    - offPeakPhases : List<SignalPhase>
+    --
+    + calculatePhaseDurations(intersection) : List<SignalPhase>
+    + isPeakHour() : boolean
+}
+
+class RoundRobinTimingStrategy {
+    - equalDuration : int
+    --
+    + calculatePhaseDurations(intersection) : List<SignalPhase>
+}
+
+note bottom of TimingStrategy #FFE0B2
+    **STEP 4 - How long is each signal?**
+    "**Strategy Pattern** — timing is pluggable."
+
+    "**FixedTiming**: green=30s, yellow=5s, red=30s.
+    Simple, predictable. Small intersections.
+    **AdaptiveTiming**: reads sensor data, gives
+    more green time to congested roads.
+    **PeakHourTiming**: switches between peak
+    and off-peak timing profiles.
+    **RoundRobin**: equal time for all roads."
+
+    "Switch strategies at runtime:
+    8am-10am: PeakHour. Night: Fixed."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+TimingStrategy <|.. FixedTimingStrategy
+TimingStrategy <|.. AdaptiveTimingStrategy
+TimingStrategy <|.. PeakHourTimingStrategy
+TimingStrategy <|.. RoundRobinTimingStrategy
+SignalController --> TimingStrategy : delegates >
+SignalController --> SignalPhase : cycles through >
+SignalController --> TrafficLight : controls >
+Intersection --> SignalController : managed by >
+
+
+' ====================================================================
+'  STEP 5: SENSORS — Observer Pattern
+' ====================================================================
+interface TrafficSensor <<Observer>> {
+    + detect() : SensorReading
+    + getType() : SensorType
+}
+
+class InductionLoopSensor {
+    - location : Location
+    --
+    + detect() : SensorReading
+    + getType() : SensorType
+}
+
+class CameraSensor {
+    - location : Location
+    - resolution : String
+    --
+    + detect() : SensorReading
+    + getType() : SensorType
+}
+
+class RadarSensor {
+    - location : Location
+    --
+    + detect() : SensorReading
+    + getType() : SensorType
+}
+
+class SensorReading {
+    - sensorId : String
+    - timestamp : LocalDateTime
+    - vehicleCount : int
+    - averageSpeed : double
+    - queueLength : int
+    - occupancy : double
+}
+
+enum SensorType {
+    INDUCTION_LOOP
+    CAMERA
+    RADAR
+    INFRARED
+}
+
+class SensorManager {
+    - sensors : Map<String, TrafficSensor>
+    - observers : List<SensorDataObserver>
+    --
+    + pollAllSensors() : List<SensorReading>
+    + getSensorReading(sensorId) : SensorReading
+    + registerObserver(obs) : void
+    - notifyObservers(reading) : void
+}
+
+interface SensorDataObserver <<Observer>> {
+    + onSensorData(reading) : void
+}
+
+class CongestionDetector {
+    - threshold : int
+    --
+    + onSensorData(reading) : void
+}
+
+class AdaptiveTimingUpdater {
+    --
+    + onSensorData(reading) : void
+}
+
+class AnalyticsCollector {
+    --
+    + onSensorData(reading) : void
+}
+
+note bottom of TrafficSensor #B2EBF2
+    **STEP 5 - Eyes on the road.**
+    "Sensors detect vehicles at each road.
+    **Strategy** — sensor type is pluggable:
+    InductionLoop (in-ground), Camera (vision),
+    Radar (speed). All return SensorReading."
+
+    "SensorManager polls sensors and notifies
+    observers. **Observer Pattern**:"
+    "**CongestionDetector**: flags heavy traffic.
+    **AdaptiveTimingUpdater**: feeds real-time
+    data to AdaptiveTimingStrategy.
+    **AnalyticsCollector**: logs for reporting."
+    **Patterns: Strategy + Observer | OCP, SRP**
+end note
+
+TrafficSensor <|.. InductionLoopSensor
+TrafficSensor <|.. CameraSensor
+TrafficSensor <|.. RadarSensor
+TrafficSensor --> SensorReading : produces >
+TrafficSensor --> SensorType
+SensorDataObserver <|.. CongestionDetector
+SensorDataObserver <|.. AdaptiveTimingUpdater
+SensorDataObserver <|.. AnalyticsCollector
+SensorManager --> TrafficSensor : polls >
+SensorManager --> SensorDataObserver : notifies >
+Intersection --> TrafficSensor : has sensors >
+TrafficManagementService --> SensorManager
+AdaptiveTimingStrategy --> SensorManager : reads >
+
+
+' ====================================================================
+'  STEP 6: EMERGENCY HANDLING — Command Pattern
+' ====================================================================
+class EmergencyHandler {
+    - commandHistory : List<EmergencyCommand>
+    --
+    + handleEmergencyVehicle(vehicle, route) : void
+    + clearEmergency(vehicleId) : void
+}
+
+interface EmergencyCommand <<Command>> {
+    + execute() : void
+    + undo() : void
+}
+
+class GreenCorridorCommand {
+    - intersections : List<Intersection>
+    - route : List<Road>
+    - previousStates : Map<String, TrafficSignal>
+    --
+    + execute() : void
+    + undo() : void
+}
+
+class AllRedCommand {
+    - intersection : Intersection
+    - previousStates : Map<String, TrafficSignal>
+    --
+    + execute() : void
+    + undo() : void
+}
+
+class EmergencyVehicle {
+    - vehicleId : String
+    - type : EmergencyType
+    - currentLocation : Location
+    - route : List<Intersection>
+    - priority : int
+}
+
+enum EmergencyType {
+    AMBULANCE
+    FIRE_TRUCK
+    POLICE
+    VIP_CONVOY
+}
+
+note bottom of EmergencyCommand #FFCDD2
+    **STEP 6 - Ambulance approaching!**
+    "**Command Pattern** — emergency overrides
+    are reversible commands."
+
+    "**GreenCorridorCommand**: turn all signals
+    green along the ambulance route. Saves
+    previous states. When ambulance passes,
+    undo() restores original signals.
+    **AllRedCommand**: stop all traffic at
+    an intersection (accident/safety)."
+
+    "Commands are logged for audit.
+    Multiple emergencies? Queue them."
+    **Pattern: Command | SRP, OCP**
+end note
+
+EmergencyCommand <|.. GreenCorridorCommand
+EmergencyCommand <|.. AllRedCommand
+EmergencyHandler --> EmergencyCommand : executes >
+EmergencyHandler --> EmergencyVehicle : tracks >
+EmergencyVehicle --> EmergencyType
+EmergencyVehicle --> Location
+TrafficManagementService --> EmergencyHandler
+
+
+' ====================================================================
+'  STEP 7: CENTRAL CONTROLLER — Coordination
+' ====================================================================
+class CentralController {
+    - intersectionControllers : Map<String, SignalController>
+    - coordinationStrategy : CoordinationStrategy
+    --
+    + startAll() : void
+    + stopAll() : void
+    + tickAll() : void
+    + coordinateGreenWave(corridor) : void
+}
+
+interface CoordinationStrategy <<Strategy>> {
+    + coordinate(controllers) : void
+}
+
+class IndependentStrategy {
+    + coordinate(controllers) : void
+}
+
+class GreenWaveStrategy {
+    - corridorSpeed : int
+    - offset : int
+    --
+    + coordinate(controllers) : void
+}
+
+class AdaptiveNetworkStrategy {
+    + coordinate(controllers) : void
+}
+
+note bottom of CoordinationStrategy #D1C4E9
+    **STEP 7 - Coordinate across intersections.**
+    "Individual intersections work alone.
+    But a corridor (e.g., a main road with
+    5 intersections) needs coordination."
+
+    "**Strategy Pattern:**
+    **Independent**: each intersection on its own.
+    **GreenWave**: stagger green signals along
+    a corridor so a car hitting green at
+    intersection 1 hits green at 2, 3, 4, 5.
+    **AdaptiveNetwork**: city-wide optimization."
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+CoordinationStrategy <|.. IndependentStrategy
+CoordinationStrategy <|.. GreenWaveStrategy
+CoordinationStrategy <|.. AdaptiveNetworkStrategy
+CentralController --> CoordinationStrategy : delegates >
+CentralController --> SignalController : manages >
+TrafficManagementService --> CentralController
+
+
+' ====================================================================
+'  STEP 8: SIGNAL OBSERVER — Notifications
+' ====================================================================
+interface SignalObserver <<Observer>> {
+    + onSignalChange(light, oldSignal, newSignal) : void
+}
+
+class PedestrianDisplayObserver {
+    + onSignalChange(light, oldSignal, newSignal) : void
+}
+
+class EmergencyPreemptObserver {
+    + onSignalChange(light, oldSignal, newSignal) : void
+}
+
+class LoggingObserver {
+    + onSignalChange(light, oldSignal, newSignal) : void
+}
+
+class VehicleToInfraObserver {
+    + onSignalChange(light, oldSignal, newSignal) : void
+}
+
+note bottom of SignalObserver #B2EBF2
+    **STEP 8 - React to signal changes.**
+    "**Observer Pattern** — on every signal
+    change, observers react:"
+
+    "**PedestrianDisplay**: update walk/don't-walk.
+    **EmergencyPreempt**: check if emergency
+    vehicle is nearby, trigger override.
+    **LoggingObserver**: log for audit/analytics.
+    **V2I Observer**: broadcast to connected
+    vehicles (future smart traffic)."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+SignalObserver <|.. PedestrianDisplayObserver
+SignalObserver <|.. EmergencyPreemptObserver
+SignalObserver <|.. LoggingObserver
+SignalObserver <|.. VehicleToInfraObserver
+TrafficLight --> SignalObserver : notifies >
+
+
+' ====================================================================
+'  ANALYTICS
+' ====================================================================
+class AnalyticsService {
+    --
+    + getAverageWaitTime(intersectionId) : double
+    + getCongestionReport(from, to) : TrafficReport
+    + getPeakHours(intersectionId) : List<TimeRange>
+}
+
+class TrafficReport {
+    - period : String
+    - avgWaitTime : double
+    - peakCongestion : CongestionLevel
+    - totalVehicles : long
+    - emergencyCount : int
+}
+
+AnalyticsService --> TrafficReport
+TrafficManagementService --> AnalyticsService
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Intersections have Roads with TrafficLights.
+    Lights cycle Green -> Yellow -> Red via **State Pattern**
+    (safety: Green->Red impossible, must go through Yellow).
+    SignalController uses **Timing Strategy** (Fixed/Adaptive/PeakHour).
+    Sensors detect traffic, feed **Observer** chain (congestion detection,
+    adaptive timing, analytics). Emergency vehicles get green corridors
+    via reversible **Commands**. Multiple intersections coordinated via
+    **Green Wave Strategy**. 6 patterns: **State**, **Strategy** (x3),
+    **Observer** (x2), **Command**, **Facade**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Traffic control center calls TrafficManagementService | Facade | SRP, DIP |
+    | 2 | Intersection has Roads (direction, lanes, queue, congestion) | -- | SRP |
+    | 3 | Green -> Yellow -> Red (safety enforced, no skipping Yellow) | State | SRP, OCP |
+    | 4 | Fixed / Adaptive / PeakHour / RoundRobin timing | Strategy (timing) | OCP, DIP |
+    | 5 | Loop / Camera / Radar sensors detect traffic, feed observers | Strategy + Observer | OCP, SRP |
+    | 6 | Ambulance: green corridor command, undo when passed | Command | SRP, OCP |
+    | 7 | Green wave: stagger signals along corridor for smooth flow | Strategy (coordination) | OCP, DIP |
+    | 8 | Pedestrian display, emergency preempt, V2I, logging | Observer | OCP, SRP |
+    |  |  |  |  |
+    | **Single Intersection** = Steps 2-4 | **Sensors** = Step 5 | **Emergency** = Step 6 | **City-wide** = Step 7 |
+endlegend
+
+@enduml

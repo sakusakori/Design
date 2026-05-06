@@ -1,0 +1,531 @@
+@startuml EC2DiscountSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>EC2 Instance Discount System - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Customer launches t3.large in us-east-1. System picks best discount: Reserved 3yr > Savings Plan > Spot > On-Demand."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — PricingService
+' ====================================================================
+class PricingService <<Facade>> {
+    - basePriceRegistry : BasePriceRegistry
+    - discountEngine : DiscountEngine
+    - usageTracker : UsageTracker
+    - spotMarket : SpotPriceService
+    --
+    + calculatePrice(instance, customer) : PriceBreakdown
+    + getBestDiscount(instance, customer) : DiscountStrategy
+    + getAvailableDiscounts(instance, customer) : List<DiscountStrategy>
+    + estimateMonthlyCost(instances, customer) : PriceBreakdown
+}
+
+note top of PricingService #BBDEFB
+    **STEP 1 - Start here.**
+    "Customer launches an EC2 instance.
+    PricingService is the **Facade** — it
+    coordinates base pricing, discount
+    selection, usage tracking, and spot
+    market. Returns a PriceBreakdown."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: EC2 INSTANCE MODEL
+' ====================================================================
+class EC2Instance {
+    - instanceId : String
+    - type : InstanceType
+    - size : InstanceSize
+    - region : Region
+    - os : OperatingSystem
+    - state : InstanceState
+    - launchedAt : LocalDateTime
+    --
+    + getHourlyBasePrice() : double
+    + isRunning() : boolean
+}
+
+enum InstanceType {
+    T2_GENERAL
+    T3_GENERAL
+    M5_GENERAL
+    C5_COMPUTE
+    R5_MEMORY
+    P3_GPU
+}
+
+enum InstanceSize {
+    NANO
+    MICRO
+    SMALL
+    MEDIUM
+    LARGE
+    XLARGE
+    TWOXLARGE
+}
+
+enum Region {
+    US_EAST_1
+    US_WEST_2
+    EU_WEST_1
+    AP_SOUTH_1
+    AP_SOUTHEAST_1
+}
+
+enum OperatingSystem {
+    LINUX
+    WINDOWS
+    RHEL
+    SUSE
+}
+
+enum InstanceState {
+    RUNNING
+    STOPPED
+    TERMINATED
+}
+
+note top of EC2Instance #C8E6C9
+    **STEP 2 - What are we pricing?**
+    "An EC2Instance has a type (t3, m5, c5),
+    size (micro to 2xlarge), region,
+    and OS. Each combination has a
+    different base hourly rate."
+    "Pure model, no pricing logic." **(SRP)**
+end note
+
+EC2Instance --> InstanceType
+EC2Instance --> InstanceSize
+EC2Instance --> Region
+EC2Instance --> OperatingSystem
+EC2Instance --> InstanceState
+
+
+' ====================================================================
+'  STEP 3: CUSTOMER + USAGE
+' ====================================================================
+class Customer {
+    - customerId : String
+    - name : String
+    - accountType : AccountType
+    - reservations : List<Reservation>
+    - savingsPlans : List<SavingsPlan>
+    --
+    + getAccountType() : AccountType
+    + getActiveReservations() : List<Reservation>
+    + getActiveSavingsPlans() : List<SavingsPlan>
+}
+
+enum AccountType {
+    INDIVIDUAL
+    STARTUP
+    ENTERPRISE
+    GOVERNMENT
+}
+
+class UsageTracker {
+    - instanceHours : Map<String, Long>
+    - monthlySpend : Map<String, Double>
+    --
+    + getTotalInstanceHours(customerId) : long
+    + getMonthlySpend(customerId) : double
+    + getRunningInstanceCount(customerId) : int
+    + recordUsage(customerId, instance, hours) : void
+}
+
+note top of Customer #C8E6C9
+    **STEP 3 - Who is being charged?**
+    "Customer has account type (Individual,
+    Enterprise, Government), active
+    reservations, and savings plans.
+    **UsageTracker** records total hours
+    and monthly spend — needed for
+    volume-based discounts."
+end note
+
+Customer --> AccountType
+PricingService --> UsageTracker : tracks usage >
+
+
+' ====================================================================
+'  STEP 4: BASE PRICE REGISTRY
+' ====================================================================
+class BasePriceRegistry {
+    - prices : Map<PriceKey, Double>
+    --
+    + getHourlyRate(type, size, region, os) : double
+    + registerPrice(key, rate) : void
+}
+
+class PriceKey {
+    - type : InstanceType
+    - size : InstanceSize
+    - region : Region
+    - os : OperatingSystem
+}
+
+note bottom of BasePriceRegistry #C8E6C9
+    **STEP 4 - Base price lookup.**
+    "Before any discount, what's the list price?
+    BasePriceRegistry maps (type+size+region+OS)
+    to an hourly rate. Example: t3.large /
+    us-east-1 / Linux = $0.0832/hr.
+    All discounts are applied ON TOP of this."
+end note
+
+BasePriceRegistry --> PriceKey : indexed by >
+PricingService --> BasePriceRegistry : looks up >
+
+
+' ====================================================================
+'  STEP 5: DISCOUNT STRATEGY — Core Pattern (Strategy)
+' ====================================================================
+interface DiscountStrategy <<Strategy>> {
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + getDiscountName() : String
+    + isEligible(instance, customer) : boolean
+}
+
+class OnDemandPricing <<ConcreteStrategy>> {
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+class ReservedInstanceDiscount <<ConcreteStrategy>> {
+    - term : ReservationTerm
+    - paymentOption : PaymentOption
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+class SavingsPlanDiscount <<ConcreteStrategy>> {
+    - commitmentPerHour : double
+    - term : ReservationTerm
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+class SpotInstanceDiscount <<ConcreteStrategy>> {
+    - spotPriceService : SpotPriceService
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + isEligible(instance, customer) : boolean
+    + getCurrentSpotPrice(type, size, region) : double
+}
+
+class VolumeDiscount <<ConcreteStrategy>> {
+    - usageTracker : UsageTracker
+    - tiers : List<VolumeTier>
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+class EnterpriseDiscount <<ConcreteStrategy>> {
+    - negotiatedRate : double
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountPercent(instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+note top of DiscountStrategy #FFE0B2
+    **STEP 5 - The core design. (KEY STEP)**
+    "One interface: calculatePrice(). Each discount
+    type is a **Strategy** — pluggable, independent."
+
+    "**OnDemand**: 0% off (pay-as-you-go).
+    **Reserved**: 30-60% off (1yr/3yr commit).
+    **SavingsPlan**: 20-40% off ($/hr commit).
+    **Spot**: up to 90% off (interruptible).
+    **Volume**: tiered % off (by total hours).
+    **Enterprise**: custom negotiated rate."
+
+    "isEligible() checks if customer qualifies.
+    Add FreeTrialDiscount? One new class."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+DiscountStrategy <|.. OnDemandPricing
+DiscountStrategy <|.. ReservedInstanceDiscount
+DiscountStrategy <|.. SavingsPlanDiscount
+DiscountStrategy <|.. SpotInstanceDiscount
+DiscountStrategy <|.. VolumeDiscount
+DiscountStrategy <|.. EnterpriseDiscount
+
+
+' ====================================================================
+'  SUPPORTING: Reservation terms, Volume tiers
+' ====================================================================
+class Reservation {
+    - reservationId : String
+    - instanceType : InstanceType
+    - instanceSize : InstanceSize
+    - term : ReservationTerm
+    - paymentOption : PaymentOption
+    - startDate : LocalDate
+    - endDate : LocalDate
+    --
+    + isActive() : boolean
+    + coversInstance(instance) : boolean
+}
+
+enum ReservationTerm {
+    ONE_YEAR
+    THREE_YEAR
+}
+
+enum PaymentOption {
+    ALL_UPFRONT
+    PARTIAL_UPFRONT
+    NO_UPFRONT
+}
+
+class SavingsPlan {
+    - planId : String
+    - commitmentPerHour : double
+    - term : ReservationTerm
+    - startDate : LocalDate
+    --
+    + isActive() : boolean
+    + getRemainingCommitment() : double
+}
+
+class VolumeTier {
+    - minHours : long
+    - maxHours : long
+    - discountPercent : double
+}
+
+Reservation --> ReservationTerm
+Reservation --> PaymentOption
+Customer --> Reservation : holds >
+Customer --> SavingsPlan : holds >
+ReservedInstanceDiscount --> Reservation : checks >
+SavingsPlanDiscount --> SavingsPlan : checks >
+VolumeDiscount --> VolumeTier : uses tiers >
+
+
+' ====================================================================
+'  STEP 6: DISCOUNT DECORATOR — Stacking Discounts
+' ====================================================================
+abstract class DiscountDecorator <<Decorator>> {
+    # wrapped : DiscountStrategy
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + getDiscountName() : String
+}
+
+class LoyaltyDiscountDecorator {
+    - loyaltyPercent : double
+    - minAccountAgeDays : int
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+class PromoCodeDecorator {
+    - promoCode : String
+    - promoPercent : double
+    - validUntil : LocalDate
+    --
+    + calculatePrice(basePrice, instance, customer) : double
+    + isEligible(instance, customer) : boolean
+}
+
+note bottom of DiscountDecorator #FFCDD2
+    **STEP 6 - Stack discounts.**
+    "Customer has Reserved 3yr + Loyalty bonus.
+    **Decorator Pattern** — wraps a base strategy
+    and adds another layer on top."
+
+    "new LoyaltyDecorator(
+      new ReservedInstanceDiscount(3yr, allUpfront)
+    )"
+
+    "Reserved gives 60% off, Loyalty adds 5% more.
+    PromoCode adds temporary extra discount.
+    Composable without modifying any strategy."
+    **Pattern: Decorator | OCP, SRP**
+end note
+
+DiscountStrategy <|.. DiscountDecorator
+DiscountDecorator o--> DiscountStrategy : wraps >
+DiscountDecorator <|-- LoyaltyDiscountDecorator
+DiscountDecorator <|-- PromoCodeDecorator
+
+
+' ====================================================================
+'  STEP 7: DISCOUNT ENGINE — Selects Best Strategy
+' ====================================================================
+class DiscountEngine {
+    - strategies : List<DiscountStrategy>
+    --
+    + findBestDiscount(instance, customer) : DiscountStrategy
+    + findAllEligible(instance, customer) : List<DiscountStrategy>
+    + registerStrategy(strategy) : void
+}
+
+note bottom of DiscountEngine #D1C4E9
+    **STEP 7 - Pick the best discount.**
+    "Multiple discounts may apply. DiscountEngine
+    iterates all registered strategies, filters
+    by isEligible(), computes price for each,
+    and returns the cheapest option."
+
+    "This is the **orchestrator** — decoupled
+    from individual strategy logic."
+    **(SRP, OCP)**
+end note
+
+DiscountEngine o--> DiscountStrategy : evaluates >
+PricingService --> DiscountEngine : uses >
+
+
+' ====================================================================
+'  STEP 8: SPOT PRICE — Observer Pattern
+' ====================================================================
+class SpotPriceService {
+    - currentPrices : Map<PriceKey, Double>
+    - observers : List<SpotPriceObserver>
+    --
+    + getCurrentPrice(type, size, region) : double
+    + updatePrice(key, newPrice) : void
+    + registerObserver(obs) : void
+    - notifyObservers(key, oldPrice, newPrice) : void
+}
+
+interface SpotPriceObserver <<Observer>> {
+    + onPriceChange(key, oldPrice, newPrice) : void
+}
+
+class SpotInterruptionHandler {
+    --
+    + onPriceChange(key, oldPrice, newPrice) : void
+}
+
+class CustomerAlertObserver {
+    --
+    + onPriceChange(key, oldPrice, newPrice) : void
+}
+
+note bottom of SpotPriceObserver #B2EBF2
+    **STEP 8 - Spot prices fluctuate.**
+    "Spot pricing changes with market demand.
+    **Observer Pattern** — when spot price
+    changes, observers react:
+    **InterruptionHandler**: terminates instances
+    if price exceeds customer's max bid.
+    **CustomerAlert**: notifies of price changes."
+    **Pattern: Observer | OCP, SRP**
+end note
+
+SpotPriceObserver <|.. SpotInterruptionHandler
+SpotPriceObserver <|.. CustomerAlertObserver
+SpotPriceService --> SpotPriceObserver : notifies >
+SpotInstanceDiscount --> SpotPriceService : reads >
+PricingService --> SpotPriceService
+
+
+' ====================================================================
+'  STEP 9: PRICE BREAKDOWN — Result Object
+' ====================================================================
+class PriceBreakdown {
+    - baseHourlyRate : double
+    - discountApplied : String
+    - discountPercent : double
+    - finalHourlyRate : double
+    - estimatedMonthly : double
+    - appliedStrategies : List<String>
+    --
+    + getBaseRate() : double
+    + getFinalRate() : double
+    + getSavings() : double
+    + getSavingsPercent() : double
+    + toString() : String
+}
+
+note bottom of PriceBreakdown #C8E6C9
+    **STEP 9 - Transparent result.**
+    "PriceBreakdown shows the customer:
+    Base: $0.0832/hr
+    Discount: Reserved 3yr All-Upfront (60%)
+    + Loyalty (5%)
+    Final: $0.0316/hr
+    Monthly estimate: $22.75
+    Total savings: 62%"
+end note
+
+PricingService --> PriceBreakdown : returns >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Customer launches t3.large. PricingService looks up
+    base rate ($0.0832/hr), DiscountEngine finds all eligible strategies,
+    picks cheapest: Reserved 3yr All-Upfront (60% off). LoyaltyDecorator
+    adds 5% more. Spot prices fluctuate and Observer notifies.
+    Result: transparent PriceBreakdown."
+
+    "**5 patterns**: Strategy (6 discount types), Decorator (stacking),
+    Observer (spot prices), Facade (PricingService).
+    Add any new discount = one new class. System untouched."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Customer calls PricingService.calculatePrice() | Facade | SRP, DIP |
+    | 2 | EC2Instance: type + size + region + OS | -- | SRP |
+    | 3 | Customer: account type, reservations, savings plans | -- | SRP |
+    | 4 | BasePriceRegistry: lookup hourly rate by (type,size,region,os) | -- | SRP |
+    | 5 | 6 discount strategies: OnDemand, Reserved, Spot, SavingsPlan, Volume, Enterprise | Strategy | OCP, DIP, LSP |
+    | 6 | Stack discounts: Loyalty + PromoCode wrap base strategy | Decorator | OCP, SRP |
+    | 7 | DiscountEngine picks cheapest eligible strategy | -- | SRP, OCP |
+    | 8 | Spot prices fluctuate, observers react (interrupt, alert) | Observer | OCP, SRP |
+    | 9 | PriceBreakdown: base, discount, final, monthly estimate | -- | SRP |
+    |  |  |  |  |
+    | **Pricing** = Steps 4-7 | **Spot Market** = Step 8 | **Result** = Step 9 |  |
+endlegend
+
+@enduml

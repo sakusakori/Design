@@ -1,0 +1,407 @@
+@startuml FileFilteringAPI_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>File Filtering API - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Find all .java files > 1MB modified in last 7 days, sorted by size." Follow Step 1 to 7.</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE — FileFilterService
+' ====================================================================
+class FileFilterService <<Facade>> {
+    - fileSource : FileSource
+    - defaultFilter : Filter
+    --
+    + search(filter) : List<File>
+    + search(filter, comparator) : List<File>
+    + count(filter) : int
+    + findFirst(filter) : File
+    + exists(filter) : boolean
+}
+
+note top of FileFilterService #BBDEFB
+    **STEP 1 - Start here.**
+    "Client calls search(filter) with any
+    filter combination. This **Facade**
+    hides how files are fetched (local disk,
+    S3, database) and applies the filter."
+
+    "Example: service.search(
+      new AndFilter(sizeFilter, extFilter)
+    )"
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: FILE MODEL
+' ====================================================================
+class File {
+    - name : String
+    - extension : String
+    - size : long
+    - path : String
+    - lastModified : LocalDateTime
+    - createdAt : LocalDateTime
+    - isDirectory : boolean
+    - permissions : Set<Permission>
+    --
+    + getName() : String
+    + getExtension() : String
+    + getSize() : long
+    + getPath() : String
+    + getLastModified() : LocalDateTime
+    + isDirectory() : boolean
+    + isHidden() : boolean
+}
+
+enum Permission {
+    READ
+    WRITE
+    EXECUTE
+}
+
+note top of File #C8E6C9
+    **STEP 2 - What are we filtering?**
+    "A File has name, extension, size, path,
+    timestamps, and permissions.
+    These are the **attributes** we filter on.
+    Pure data model, no logic." **(SRP)**
+end note
+
+File --> Permission : has >
+
+
+' ====================================================================
+'  STEP 3: FILE SOURCE — Strategy Pattern
+' ====================================================================
+interface FileSource <<Strategy>> {
+    + listFiles() : List<File>
+    + listFiles(directory) : List<File>
+}
+
+class LocalFileSource {
+    - rootPath : String
+    --
+    + listFiles() : List<File>
+    + listFiles(directory) : List<File>
+}
+
+class InMemoryFileSource {
+    - files : List<File>
+    --
+    + listFiles() : List<File>
+    + addFile(file) : void
+}
+
+class S3FileSource {
+    - bucketName : String
+    - s3Client : S3Client
+    --
+    + listFiles() : List<File>
+    + listFiles(prefix) : List<File>
+}
+
+note bottom of FileSource #C8E6C9
+    **STEP 3 - Where do files come from?**
+    "Could be local disk, in-memory (tests),
+    or cloud (S3). **Strategy Pattern** —
+    FileFilterService depends on FileSource
+    interface, not concrete source."
+
+    "Swap LocalFileSource for S3FileSource
+    without changing any filter logic."
+    **Pattern: Strategy | DIP, OCP**
+end note
+
+FileSource <|.. LocalFileSource
+FileSource <|.. InMemoryFileSource
+FileSource <|.. S3FileSource
+FileFilterService --> FileSource : reads from >
+
+
+' ====================================================================
+'  STEP 4: FILTER INTERFACE — Core Abstraction (Strategy)
+' ====================================================================
+interface Filter <<Strategy>> {
+    + apply(file : File) : boolean
+}
+
+note top of Filter #FFE0B2
+    **STEP 4 - The core abstraction.**
+    "One interface, one method: apply(file).
+    Returns true if file passes the filter.
+    Every filter — simple or complex —
+    implements this same interface.
+    This is the **Strategy Pattern** foundation.
+    The system is built around this."
+    **Pattern: Strategy | ISP, OCP**
+end note
+
+
+' ====================================================================
+'  STEP 5: CONCRETE FILTERS — Leaf Strategies
+' ====================================================================
+class SizeFilter {
+    - minSize : long
+    - maxSize : long
+    - operator : ComparisonOperator
+    --
+    + apply(file) : boolean
+}
+
+class ExtensionFilter {
+    - extensions : Set<String>
+    --
+    + apply(file) : boolean
+}
+
+class NameFilter {
+    - pattern : String
+    - regex : boolean
+    --
+    + apply(file) : boolean
+}
+
+class DateFilter {
+    - after : LocalDateTime
+    - before : LocalDateTime
+    - dateField : DateField
+    --
+    + apply(file) : boolean
+}
+
+class PermissionFilter {
+    - requiredPermissions : Set<Permission>
+    --
+    + apply(file) : boolean
+}
+
+class DirectoryFilter {
+    - includeDirectories : boolean
+    --
+    + apply(file) : boolean
+}
+
+enum ComparisonOperator {
+    GREATER_THAN
+    LESS_THAN
+    EQUAL_TO
+    BETWEEN
+}
+
+enum DateField {
+    CREATED
+    MODIFIED
+}
+
+note bottom of SizeFilter #FFE0B2
+    **STEP 5 - Leaf filters (one criterion each).**
+    "Each filter checks ONE attribute:
+    **SizeFilter**: file > 1MB? (uses operator)
+    **ExtensionFilter**: .java, .py, .txt?
+    **NameFilter**: matches pattern/regex?
+    **DateFilter**: modified after X date?
+    **PermissionFilter**: has WRITE access?
+    **DirectoryFilter**: skip directories?"
+
+    "Each is a **Strategy** — pluggable, testable,
+    single responsibility."
+    **Pattern: Strategy | SRP, OCP**
+end note
+
+Filter <|.. SizeFilter
+Filter <|.. ExtensionFilter
+Filter <|.. NameFilter
+Filter <|.. DateFilter
+Filter <|.. PermissionFilter
+Filter <|.. DirectoryFilter
+SizeFilter --> ComparisonOperator
+DateFilter --> DateField
+
+
+' ====================================================================
+'  STEP 6: COMPOSITE FILTERS — AND, OR, NOT (Composite Pattern)
+' ====================================================================
+class AndFilter {
+    - filters : List<Filter>
+    --
+    + AndFilter(filters)
+    + apply(file) : boolean
+}
+
+class OrFilter {
+    - filters : List<Filter>
+    --
+    + OrFilter(filters)
+    + apply(file) : boolean
+}
+
+class NotFilter {
+    - filter : Filter
+    --
+    + NotFilter(filter)
+    + apply(file) : boolean
+}
+
+note top of AndFilter #FFCDD2
+    **STEP 6 - Combine filters. (KEY STEP)**
+    "This is the **Composite Pattern**. And, Or,
+    Not are themselves Filters — they implement
+    the same Filter interface."
+
+    "**AndFilter**: ALL children must pass.
+    **OrFilter**: ANY child must pass.
+    **NotFilter**: inverts one child."
+
+    "You can nest them:
+    And(SizeFilter, Or(ExtFilter, NameFilter))
+    This gives infinite composability with
+    zero new code."
+    **Pattern: Composite | OCP, LSP**
+end note
+
+Filter <|.. AndFilter
+Filter <|.. OrFilter
+Filter <|.. NotFilter
+AndFilter o--> Filter : children >
+OrFilter o--> Filter : children >
+NotFilter o--> Filter : wraps >
+
+
+' ====================================================================
+'  STEP 7: BUILDER — Fluent Filter Construction
+' ====================================================================
+class FilterBuilder <<Builder>> {
+    - filters : List<Filter>
+    --
+    + minSize(bytes) : FilterBuilder
+    + maxSize(bytes) : FilterBuilder
+    + extensions(exts) : FilterBuilder
+    + nameContains(pattern) : FilterBuilder
+    + nameMatches(regex) : FilterBuilder
+    + modifiedAfter(date) : FilterBuilder
+    + modifiedBefore(date) : FilterBuilder
+    + hasPermission(perm) : FilterBuilder
+    + excludeDirectories() : FilterBuilder
+    + or(filter) : FilterBuilder
+    + not(filter) : FilterBuilder
+    + build() : Filter
+}
+
+note top of FilterBuilder #D1C4E9
+    **STEP 7 - Clean API for clients.**
+    "Constructing And(Size, Ext, Date) by hand
+    is verbose. **Builder Pattern** gives a
+    fluent API:"
+
+    "Filter f = new FilterBuilder()
+      .minSize(1_000_000)
+      .extensions("java", "kt")
+      .modifiedAfter(lastWeek)
+      .excludeDirectories()
+      .build();  // returns AndFilter"
+
+    "build() wraps all criteria in an AndFilter.
+    Clean, readable, validated."
+    **Pattern: Builder | SRP**
+end note
+
+FilterBuilder --> Filter : builds >
+FilterBuilder --> AndFilter : default combines with >
+
+
+' ====================================================================
+'  SORTING (optional, complementary)
+' ====================================================================
+interface FileSortStrategy <<Strategy>> {
+    + sort(files) : List<File>
+}
+
+class SortBySize {
+    - ascending : boolean
+    --
+    + sort(files) : List<File>
+}
+
+class SortByName {
+    - ascending : boolean
+    --
+    + sort(files) : List<File>
+}
+
+class SortByDate {
+    - field : DateField
+    - ascending : boolean
+    --
+    + sort(files) : List<File>
+}
+
+FileSortStrategy <|.. SortBySize
+FileSortStrategy <|.. SortByName
+FileSortStrategy <|.. SortByDate
+FileFilterService --> FileSortStrategy : optional sort >
+
+
+' ====================================================================
+'  FACADE CONNECTIONS
+' ====================================================================
+FileFilterService --> Filter : applies >
+FileFilterService --> File : returns >
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "The entire system is built around one interface:
+    Filter.apply(file). Simple filters check one attribute (**Strategy**).
+    Composite filters combine them with AND/OR/NOT (**Composite**).
+    Builder provides a fluent API. FileSource is pluggable.
+    The query 'all .java files > 1MB modified last week' becomes:
+    FilterBuilder().extensions(java).minSize(1MB).modifiedAfter(lastWeek).build()
+    4 patterns: **Strategy**, **Composite**, **Builder**, **Facade**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Client calls FileFilterService.search(filter) | Facade | SRP, DIP |
+    | 2 | File model: name, size, extension, date, permissions | -- | SRP |
+    | 3 | Files fetched from local disk / S3 / in-memory | Strategy (source) | DIP, OCP |
+    | 4 | Filter interface: one method apply(file) -> boolean | Strategy (core) | ISP, OCP |
+    | 5 | Leaf filters: Size, Extension, Name, Date, Permission | Strategy (criteria) | SRP, OCP |
+    | 6 | AndFilter, OrFilter, NotFilter combine any filters | Composite | OCP, LSP |
+    | 7 | FilterBuilder gives fluent API to construct filters | Builder | SRP |
+    |  |  |  |  |
+    | **"Find .java files > 1MB from last week"** = FilterBuilder().extensions("java").minSize(1MB).modifiedAfter(lastWeek).build() |  |  |
+endlegend
+
+@enduml

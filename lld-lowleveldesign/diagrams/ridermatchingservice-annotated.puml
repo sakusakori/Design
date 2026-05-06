@@ -1,0 +1,626 @@
+@startuml RiderMatchingService_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Quick Commerce Rider Matching Service - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "Order placed at dark store. System finds nearest available rider, assigns, rider picks up, delivers in 10 min."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class RiderMatchingService <<Facade>> {
+    - riderPool : RiderPool
+    - matchingStrategy : MatchingStrategy
+    - assignmentPolicy : AssignmentPolicy
+    - notificationService : NotificationService
+    - loadBalancer : LoadBalancer
+    --
+    + findRider(deliveryRequest) : MatchResult
+    + reassignRider(deliveryId) : MatchResult
+    + setMatchingStrategy(strategy) : void
+    + setAssignmentPolicy(policy) : void
+    + getRiderAvailability(zone) : int
+}
+
+note top of RiderMatchingService #BBDEFB
+    **STEP 1 - Start here.**
+    "Order is packed at a dark store.
+    System needs a rider NOW (10 min SLA).
+    RiderMatchingService is the **Facade**
+    — coordinates matching strategy,
+    assignment policy, rider pool, and
+    notifications. Returns a MatchResult."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: DELIVERY REQUEST + ORDER
+' ====================================================================
+class DeliveryRequest {
+    - requestId : String
+    - order : Order
+    - pickupLocation : Location
+    - dropoffLocation : Location
+    - requestedAt : LocalDateTime
+    - priority : DeliveryPriority
+    - maxWaitTimeSeconds : int
+    - requiredVehicle : VehicleType
+    --
+    + getDistance() : double
+    + isExpired() : boolean
+    + getElapsedSeconds() : long
+}
+
+class Order {
+    - orderId : String
+    - customerId : String
+    - items : List<OrderItem>
+    - totalWeight : double
+    - isFragile : boolean
+    - orderValue : double
+    --
+    + requiresSpecialHandling() : boolean
+    + getWeight() : double
+}
+
+class OrderItem {
+    - name : String
+    - quantity : int
+    - weight : double
+}
+
+class Location {
+    - latitude : double
+    - longitude : double
+    - address : String
+    - zone : ServiceZone
+    --
+    + distanceTo(other) : double
+    + isWithinRadius(center, radiusKm) : boolean
+}
+
+enum DeliveryPriority {
+    EXPRESS
+    STANDARD
+    SCHEDULED
+}
+
+enum ServiceZone {
+    ZONE_A
+    ZONE_B
+    ZONE_C
+    ZONE_D
+}
+
+note top of DeliveryRequest #C8E6C9
+    **STEP 2 - What needs delivering?**
+    "**DeliveryRequest** wraps an Order with
+    pickup (dark store) and dropoff (customer)
+    locations. Has priority (EXPRESS for
+    10-min delivery), max wait time, and
+    required vehicle type."
+    "**Location** has lat/lng, zone, and
+    distanceTo() for proximity checks."
+end note
+
+DeliveryRequest --> Order : for order >
+DeliveryRequest --> Location : pickup/dropoff >
+DeliveryRequest --> DeliveryPriority
+Order *-- OrderItem
+Location --> ServiceZone
+
+
+' ====================================================================
+'  STEP 3: RIDER MODEL
+' ====================================================================
+class Rider {
+    - riderId : String
+    - name : String
+    - phone : String
+    - currentLocation : Location
+    - status : RiderStatus
+    - vehicle : VehicleType
+    - rating : double
+    - activeDeliveryCount : int
+    - maxConcurrentDeliveries : int
+    - currentZone : ServiceZone
+    - lastAssignedAt : LocalDateTime
+    - totalDeliveriesToday : int
+    --
+    + isAvailable() : boolean
+    + canTakeMore() : boolean
+    + distanceTo(location) : double
+    + assign() : void
+    + release() : void
+    + updateLocation(loc) : void
+}
+
+enum RiderStatus {
+    AVAILABLE
+    ON_DELIVERY
+    ON_BREAK
+    OFFLINE
+    RETURNING_TO_ZONE
+}
+
+enum VehicleType {
+    BICYCLE
+    SCOOTER
+    MOTORCYCLE
+    CAR
+}
+
+class RiderPool {
+    - riders : Map<String, Rider>
+    - zoneIndex : Map<ServiceZone, List<Rider>>
+    --
+    + getAvailableRiders(zone) : List<Rider>
+    + getAvailableRiders(zone, vehicleType) : List<Rider>
+    + getRider(riderId) : Rider
+    + registerRider(rider) : void
+    + updateRiderLocation(riderId, location) : void
+    + getRiderCountByZone() : Map<ServiceZone, Integer>
+}
+
+note top of Rider #C8E6C9
+    **STEP 3 - Who delivers?**
+    "**Rider** has location, status, vehicle type,
+    rating, and concurrent delivery count.
+    isAvailable() = AVAILABLE + canTakeMore().
+    **RiderPool** indexes riders by zone for
+    fast lookup. Quick commerce needs
+    sub-second matching — zone indexing
+    avoids scanning all riders."
+end note
+
+Rider --> RiderStatus
+Rider --> VehicleType
+Rider --> Location : current >
+Rider --> ServiceZone : operates in >
+RiderPool o--> Rider : manages >
+RiderMatchingService --> RiderPool
+
+
+' ====================================================================
+'  STEP 4: MATCHING STRATEGY — Strategy Pattern (CORE)
+' ====================================================================
+interface MatchingStrategy <<Strategy>> {
+    + findCandidates(request, riders) : List<RiderCandidate>
+}
+
+class NearestRiderStrategy {
+    - maxRadiusKm : double
+    --
+    + findCandidates(request, riders) : List<RiderCandidate>
+}
+
+class RatingBasedStrategy {
+    - minRating : double
+    --
+    + findCandidates(request, riders) : List<RiderCandidate>
+}
+
+class LeastLoadedStrategy {
+    --
+    + findCandidates(request, riders) : List<RiderCandidate>
+}
+
+class CompositeMatchingStrategy {
+    - strategies : List<MatchingStrategy>
+    --
+    + findCandidates(request, riders) : List<RiderCandidate>
+}
+
+class RiderCandidate {
+    - rider : Rider
+    - distanceToPickup : double
+    - estimatedPickupTimeMin : double
+    - score : double
+    --
+    + getScore() : double
+}
+
+note bottom of MatchingStrategy #FFE0B2
+    **STEP 4 - How to find the right rider? (KEY STEP)**
+    "Multiple riders are online. Which one?
+    **Strategy Pattern** — matching logic is pluggable."
+
+    "**NearestRider**: closest to dark store.
+    **RatingBased**: highest rated first.
+    **LeastLoaded**: fewest active deliveries."
+
+    "**CompositeStrategy** chains them:
+    filter by distance, rank by (rating + load).
+    Each returns scored RiderCandidates."
+
+    "Quick commerce peak: switch to NearestRider
+    for speed. Off-peak: use BestFit for quality."
+    **Pattern: Strategy + Composite | OCP, DIP**
+end note
+
+MatchingStrategy <|.. NearestRiderStrategy
+MatchingStrategy <|.. RatingBasedStrategy
+MatchingStrategy <|.. LeastLoadedStrategy
+MatchingStrategy <|.. CompositeMatchingStrategy
+CompositeMatchingStrategy o--> MatchingStrategy : chains >
+MatchingStrategy --> RiderCandidate : returns >
+RiderCandidate --> Rider
+RiderMatchingService --> MatchingStrategy : delegates >
+
+
+' ====================================================================
+'  STEP 5: SCORING — Weighted Scorer
+' ====================================================================
+class RiderScorer {
+    - weights : Map<ScoringFactor, Double>
+    --
+    + score(rider, request) : double
+    + setWeight(factor, weight) : void
+}
+
+enum ScoringFactor {
+    DISTANCE
+    RATING
+    CURRENT_LOAD
+    DELIVERY_COUNT_TODAY
+    VEHICLE_FIT
+    ZONE_FAMILIARITY
+}
+
+note bottom of RiderScorer #FFE0B2
+    **STEP 5 - Score and rank candidates.**
+    "Each rider gets a composite score:
+    Score = w1*distance + w2*rating
+    + w3*load + w4*vehicleFit"
+
+    "Weights are tunable per zone/time.
+    Peak hours: weight distance heavily.
+    Off-peak: weight rating more."
+    "Separating scoring from matching
+    keeps both extensible." **(SRP)**
+end note
+
+RiderScorer --> ScoringFactor
+RiderMatchingService --> RiderScorer : ranks with >
+
+
+' ====================================================================
+'  STEP 6: ASSIGNMENT POLICY — Strategy Pattern
+' ====================================================================
+interface AssignmentPolicy <<Strategy>> {
+    + assign(candidates, request) : AssignmentResult
+}
+
+class DirectAssignPolicy {
+    --
+    + assign(candidates, request) : AssignmentResult
+}
+
+class BroadcastAssignPolicy {
+    - timeoutSeconds : int
+    --
+    + assign(candidates, request) : AssignmentResult
+}
+
+class BatchAssignPolicy {
+    - batchWindowMs : int
+    --
+    + assign(candidates, request) : AssignmentResult
+}
+
+class AssignmentResult {
+    - assignedRider : Rider
+    - estimatedPickupMin : double
+    - estimatedDeliveryMin : double
+    - fallbackTriggered : boolean
+}
+
+note bottom of AssignmentPolicy #FFCDD2
+    **STEP 6 - How to assign?**
+    "Found candidates. Now how to assign?"
+
+    "**DirectAssign**: auto-assign top candidate.
+    (Fast. Used in quick commerce peak.)
+    **BroadcastAssign**: push to top N riders,
+    first to accept wins. (Used for Scheduled.)
+    **BatchAssign**: collect requests for X ms,
+    then optimally pair riders and orders.
+    (Used for multi-order optimization.)"
+    **Pattern: Strategy | OCP, DIP**
+end note
+
+AssignmentPolicy <|.. DirectAssignPolicy
+AssignmentPolicy <|.. BroadcastAssignPolicy
+AssignmentPolicy <|.. BatchAssignPolicy
+AssignmentPolicy --> AssignmentResult : returns >
+RiderMatchingService --> AssignmentPolicy : delegates >
+
+
+' ====================================================================
+'  STEP 7: LOAD BALANCER — Prevents Overload
+' ====================================================================
+class LoadBalancer {
+    - zoneCapacity : Map<ServiceZone, Integer>
+    - surgeThreshold : double
+    --
+    + isZoneOverloaded(zone) : boolean
+    + getSurgeMultiplier(zone) : double
+    + canAcceptRequest(zone) : boolean
+    + rebalanceRiders() : List<RebalanceCommand>
+}
+
+class RebalanceCommand {
+    - riderId : String
+    - fromZone : ServiceZone
+    - toZone : ServiceZone
+    - reason : String
+}
+
+note bottom of LoadBalancer #D1C4E9
+    **STEP 7 - Zone capacity management.**
+    "Zone A has 50 orders but only 10 riders.
+    LoadBalancer detects overload and:
+    1. Triggers surge multiplier (incentives).
+    2. Issues RebalanceCommands to move
+       idle riders from Zone C to Zone A.
+    3. Rejects new requests if capacity
+       is fully exhausted."
+end note
+
+LoadBalancer --> ServiceZone
+LoadBalancer --> RebalanceCommand : issues >
+RiderMatchingService --> LoadBalancer
+
+
+' ====================================================================
+'  STEP 8: DELIVERY STATE — State Pattern
+' ====================================================================
+interface DeliveryState <<State>> {
+    + assignRider(delivery, rider) : void
+    + pickUp(delivery) : void
+    + deliver(delivery) : void
+    + cancel(delivery, reason) : void
+    + fail(delivery, reason) : void
+}
+
+class PendingState {
+    + assignRider(delivery, rider) : void
+    + cancel(delivery, reason) : void
+}
+
+class AssignedState {
+    + pickUp(delivery) : void
+    + cancel(delivery, reason) : void
+    + fail(delivery, reason) : void
+}
+
+class PickedUpState {
+    + deliver(delivery) : void
+    + fail(delivery, reason) : void
+}
+
+class DeliveredState {
+    ' terminal
+}
+
+class CancelledState {
+    ' terminal
+}
+
+class FailedState {
+    + assignRider(delivery, rider) : void
+}
+
+class Delivery {
+    - deliveryId : String
+    - request : DeliveryRequest
+    - rider : Rider
+    - currentState : DeliveryState
+    - status : DeliveryStatus
+    - assignedAt : LocalDateTime
+    - pickedUpAt : LocalDateTime
+    - deliveredAt : LocalDateTime
+    - observers : List<DeliveryObserver>
+    --
+    + assignRider(rider) : void
+    + pickUp() : void
+    + deliver() : void
+    + cancel(reason) : void
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+}
+
+enum DeliveryStatus {
+    PENDING
+    ASSIGNED
+    PICKED_UP
+    DELIVERED
+    CANCELLED
+    FAILED
+}
+
+note bottom of DeliveryState #FFCDD2
+    **STEP 8 - Delivery lifecycle.**
+    "**State Pattern** — each state is a class.
+    **Pending**: waiting for rider assignment.
+    **Assigned**: rider heading to dark store.
+    **PickedUp**: rider has the package.
+    **Delivered/Cancelled**: terminal.
+    **Failed**: rider couldn't deliver, retry."
+
+    Pending -> Assigned -> PickedUp -> Delivered
+    Assigned/PickedUp -> Failed -> Assigned (retry)
+    Pending/Assigned -> Cancelled
+    **Pattern: State | SRP, OCP**
+end note
+
+DeliveryState <|.. PendingState
+DeliveryState <|.. AssignedState
+DeliveryState <|.. PickedUpState
+DeliveryState <|.. DeliveredState
+DeliveryState <|.. CancelledState
+DeliveryState <|.. FailedState
+Delivery --> DeliveryState : delegates >
+Delivery --> DeliveryStatus
+Delivery --> DeliveryRequest : for >
+Delivery --> Rider : assigned to >
+
+
+' ====================================================================
+'  STEP 9: OBSERVER — Notifications
+' ====================================================================
+interface DeliveryObserver <<Observer>> {
+    + onDeliveryUpdate(delivery, event) : void
+}
+
+class CustomerNotifyObserver {
+    + onDeliveryUpdate(delivery, event) : void
+}
+
+class DarkStoreObserver {
+    + onDeliveryUpdate(delivery, event) : void
+}
+
+class ETAUpdateObserver {
+    + onDeliveryUpdate(delivery, event) : void
+}
+
+class MetricsObserver {
+    + onDeliveryUpdate(delivery, event) : void
+}
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(recipient, message) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class PushNotification {
+    + send(recipient, message) : void
+}
+
+class SMSNotification {
+    + send(recipient, message) : void
+}
+
+note bottom of DeliveryObserver #B2EBF2
+    **STEP 9 - Everyone gets notified.**
+    "On every state change, Delivery calls
+    notifyObservers(). **Observer Pattern**:"
+
+    "**CustomerObserver**: 'Rider is 2 min away!'
+    **DarkStoreObserver**: 'Rider arriving for pickup.'
+    **ETAObserver**: recalculates live ETA.
+    **MetricsObserver**: logs for analytics
+    (avg pickup time, delivery SLA %)."
+
+    "Notification via **Strategy**: Push, SMS."
+    **Patterns: Observer + Strategy | OCP, SRP**
+end note
+
+DeliveryObserver <|.. CustomerNotifyObserver
+DeliveryObserver <|.. DarkStoreObserver
+DeliveryObserver <|.. ETAUpdateObserver
+DeliveryObserver <|.. MetricsObserver
+Delivery --> DeliveryObserver : notifies >
+NotificationStrategy <|.. PushNotification
+NotificationStrategy <|.. SMSNotification
+NotificationService --> NotificationStrategy : delegates >
+CustomerNotifyObserver --> NotificationService : uses >
+RiderMatchingService --> NotificationService
+
+
+' ====================================================================
+'  MATCH RESULT — Returned to caller
+' ====================================================================
+class MatchResult {
+    - success : boolean
+    - delivery : Delivery
+    - rider : Rider
+    - estimatedPickupMin : double
+    - estimatedDeliveryMin : double
+    - matchTimeMs : long
+    - strategyUsed : String
+    - fallbackUsed : boolean
+    --
+    + isSuccess() : boolean
+    + getTotalETAMin() : double
+}
+
+note bottom of MatchResult #C8E6C9
+    **Final result returned to caller.**
+    "MatchResult: success, assigned rider,
+    ETA to pickup (2 min), ETA to deliver
+    (8 min), total 10 min. Shows which
+    strategy was used, whether fallback
+    was triggered. Transparent + auditable."
+end note
+
+RiderMatchingService --> MatchResult : returns >
+MatchResult --> Delivery
+MatchResult --> Rider
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Order packed at dark store -> RiderMatchingService gets
+    available riders from zone-indexed RiderPool -> MatchingStrategy finds
+    candidates (nearest/rated/least-loaded) -> RiderScorer ranks them ->
+    AssignmentPolicy assigns (direct/broadcast/batch) -> Delivery created
+    in Pending state -> rider assigned, state moves through lifecycle (**State**)
+    -> customer, store, ETA tracker all notified (**Observer**).
+    5 patterns: **Facade**, **Strategy** (x3: matching, assignment, notification),
+    **Composite**, **State**, **Observer**. Handles surge via LoadBalancer."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | Order packed, RiderMatchingService called | Facade | SRP, DIP |
+    | 2 | DeliveryRequest: pickup/dropoff location, priority, vehicle type | -- | SRP |
+    | 3 | Rider: location, status, vehicle, rating. RiderPool indexes by zone | -- | SRP |
+    | 4 | Find candidates: nearest, rating-based, least-loaded, composite | Strategy + Composite | OCP, DIP |
+    | 5 | Score riders: weighted distance + rating + load + vehicle fit | -- | SRP |
+    | 6 | Assign: auto-assign (peak) vs broadcast (scheduled) vs batch | Strategy | OCP, DIP |
+    | 7 | LoadBalancer: detect zone overload, surge, rebalance riders | -- | SRP |
+    | 8 | Delivery: Pending -> Assigned -> PickedUp -> Delivered / Failed | State | SRP, OCP |
+    | 9 | Customer, dark store, ETA tracker, metrics all notified | Observer + Strategy | OCP, SRP |
+    |  |  |  |  |
+    | **Match** = Steps 4-6 | **Deliver** = Step 8 | **Notify** = Step 9 | **Scale** = Step 7 |
+endlegend
+
+@enduml

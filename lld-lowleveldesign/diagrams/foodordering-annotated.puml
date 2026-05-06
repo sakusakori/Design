@@ -1,0 +1,648 @@
+@startuml FoodOrderingSystem_Annotated
+
+skinparam classAttributeIconSize 0
+skinparam nodesep 35
+skinparam ranksep 30
+skinparam packageStyle rectangle
+
+skinparam class {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam enum {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+skinparam interface {
+    BackgroundColor #2ECC71
+    BorderColor #1A1A1A
+    FontColor White
+    FontSize 10
+}
+
+title <size:18>Food Ordering System - Class Diagram (Annotated for Interview)</size>\n<size:11>Trace: "User searches 'pizza', sorts by rating, adds to cart, places order, pays, tracks delivery, rates restaurant."</size>
+
+
+' ====================================================================
+'  STEP 1: FACADE
+' ====================================================================
+class FoodOrderingService <<Facade>> {
+    - restaurants : Map<String, Restaurant>
+    - orders : Map<String, Order>
+    - users : Map<String, Customer>
+    - searchStrategy : SearchStrategy
+    - sortStrategy : SortStrategy
+    - paymentService : PaymentService
+    - notificationService : NotificationService
+    - ratingService : RatingService
+    --
+    + searchRestaurants(criteria) : List<Restaurant>
+    + sortResults(restaurants, strategy) : List<Restaurant>
+    + placeOrder(cart, customerId, payStrategy) : Order
+    + cancelOrder(orderId) : void
+    + trackOrder(orderId) : OrderStatus
+    + rateRestaurant(orderId, score, review) : Rating
+    + registerCustomer(name, email, addr) : Customer
+}
+
+note top of FoodOrderingService #BBDEFB
+    **STEP 1 - Start here.**
+    "User opens the app. Client only calls
+    this **Facade**. It coordinates search,
+    sort, ordering, payment, tracking,
+    and rating — all behind one API."
+    **Pattern: Facade | SRP, DIP**
+end note
+
+
+' ====================================================================
+'  STEP 2: USER + RESTAURANT + MENU MODELS
+' ====================================================================
+class Customer {
+    - customerId : String
+    - name : String
+    - email : String
+    - phone : String
+    - addresses : List<Address>
+    - orderHistory : List<Order>
+    --
+    + getDefaultAddress() : Address
+    + addAddress(addr) : void
+}
+
+class Address {
+    - street : String
+    - city : String
+    - zipCode : String
+    - latitude : double
+    - longitude : double
+    --
+    + distanceTo(other) : double
+}
+
+class Restaurant {
+    - restaurantId : String
+    - name : String
+    - cuisine : CuisineType
+    - address : Address
+    - menu : List<MenuItem>
+    - averageRating : double
+    - totalRatings : int
+    - isOpen : boolean
+    - avgDeliveryTimeMin : int
+    --
+    + getMenu() : List<MenuItem>
+    + isOpen() : boolean
+    + getAverageRating() : double
+    + updateRating(newScore) : void
+}
+
+class MenuItem {
+    - itemId : String
+    - name : String
+    - description : String
+    - price : double
+    - category : MenuCategory
+    - isAvailable : boolean
+    - isVegetarian : boolean
+    --
+    + getPrice() : double
+    + isAvailable() : boolean
+}
+
+enum CuisineType {
+    ITALIAN
+    CHINESE
+    INDIAN
+    MEXICAN
+    JAPANESE
+    AMERICAN
+}
+
+enum MenuCategory {
+    APPETIZER
+    MAIN_COURSE
+    DESSERT
+    BEVERAGE
+    SIDES
+}
+
+note left of Restaurant #C8E6C9
+    **STEP 2 - Core models.**
+    "**Customer** with addresses.
+    **Restaurant** has name, cuisine,
+    menu, rating, deliveryTime.
+    **MenuItem** has price, category,
+    availability. Each class = one job."
+    **(SRP)**
+end note
+
+Customer *-- Address : has >
+Restaurant --> CuisineType
+Restaurant --> Address : located at >
+Restaurant *-- MenuItem : serves >
+MenuItem --> MenuCategory
+
+
+' ====================================================================
+'  STEP 3: SEARCH — Strategy Pattern
+' ====================================================================
+class SearchCriteria {
+    - query : String
+    - cuisineType : CuisineType
+    - location : Address
+    - maxDistanceKm : double
+    - maxPrice : double
+    - vegetarianOnly : boolean
+}
+
+interface SearchStrategy <<Strategy>> {
+    + search(restaurants, criteria) : List<Restaurant>
+}
+
+class NameSearchStrategy {
+    --
+    + search(restaurants, criteria) : List<Restaurant>
+}
+
+class CuisineSearchStrategy {
+    --
+    + search(restaurants, criteria) : List<Restaurant>
+}
+
+class LocationSearchStrategy {
+    - maxDistanceKm : double
+    --
+    + search(restaurants, criteria) : List<Restaurant>
+}
+
+class CompositeSearchStrategy {
+    - strategies : List<SearchStrategy>
+    --
+    + search(restaurants, criteria) : List<Restaurant>
+}
+
+note bottom of SearchStrategy #FFE0B2
+    **STEP 3 - User searches "pizza".**
+    "How do we find matching restaurants?
+    **Strategy Pattern** — search logic is pluggable.
+    **NameSearch**: fuzzy match on name/menu items.
+    **CuisineSearch**: filter by cuisine type.
+    **LocationSearch**: within X km radius."
+
+    "**CompositeSearch** chains strategies:
+    name match AND within 5km AND cuisine=Italian.
+    Add PopularitySearch? One new class."
+    **Pattern: Strategy + Composite | OCP, DIP**
+end note
+
+SearchStrategy <|.. NameSearchStrategy
+SearchStrategy <|.. CuisineSearchStrategy
+SearchStrategy <|.. LocationSearchStrategy
+SearchStrategy <|.. CompositeSearchStrategy
+CompositeSearchStrategy o--> SearchStrategy : chains >
+FoodOrderingService --> SearchStrategy : delegates >
+SearchCriteria --> CuisineType
+
+
+' ====================================================================
+'  STEP 4: SORT — Strategy Pattern
+' ====================================================================
+interface SortStrategy <<Strategy>> {
+    + sort(restaurants) : List<Restaurant>
+}
+
+class SortByRating {
+    - ascending : boolean
+    --
+    + sort(restaurants) : List<Restaurant>
+}
+
+class SortByPrice {
+    - ascending : boolean
+    --
+    + sort(restaurants) : List<Restaurant>
+}
+
+class SortByDistance {
+    - userLocation : Address
+    --
+    + sort(restaurants) : List<Restaurant>
+}
+
+class SortByDeliveryTime {
+    --
+    + sort(restaurants) : List<Restaurant>
+}
+
+class CompositeSortStrategy {
+    - strategies : List<SortStrategy>
+    --
+    + sort(restaurants) : List<Restaurant>
+}
+
+note bottom of SortStrategy #FFE0B2
+    **STEP 4 - Sort the results.**
+    "Search returned 20 restaurants.
+    How to rank them?"
+
+    "**Strategy Pattern** again — sort is pluggable.
+    **SortByRating**: highest rated first.
+    **SortByPrice**: cheapest first.
+    **SortByDistance**: nearest first.
+    **SortByDeliveryTime**: fastest first."
+
+    "**CompositeSortStrategy**: sort by rating,
+    then by distance as tiebreaker."
+    **Pattern: Strategy + Composite | OCP**
+end note
+
+SortStrategy <|.. SortByRating
+SortStrategy <|.. SortByPrice
+SortStrategy <|.. SortByDistance
+SortStrategy <|.. SortByDeliveryTime
+SortStrategy <|.. CompositeSortStrategy
+CompositeSortStrategy o--> SortStrategy : chains >
+FoodOrderingService --> SortStrategy : delegates >
+
+
+' ====================================================================
+'  STEP 5: CART + ORDER + BUILDER
+' ====================================================================
+class Cart {
+    - customerId : String
+    - restaurant : Restaurant
+    - items : List<CartItem>
+    --
+    + addItem(menuItem, qty, instructions) : void
+    + removeItem(itemId) : void
+    + updateQuantity(itemId, qty) : void
+    + getTotal() : double
+    + clear() : void
+    + getItems() : List<CartItem>
+}
+
+class CartItem {
+    - menuItem : MenuItem
+    - quantity : int
+    - specialInstructions : String
+    - customizations : List<String>
+    --
+    + getSubtotal() : double
+}
+
+class Order {
+    - orderId : String
+    - customer : Customer
+    - restaurant : Restaurant
+    - items : List<CartItem>
+    - currentState : OrderState
+    - status : OrderStatus
+    - totalAmount : double
+    - deliveryAddress : Address
+    - deliveryAgent : DeliveryAgent
+    - placedAt : LocalDateTime
+    - observers : List<OrderObserver>
+    --
+    + confirm() : void
+    + startPreparing() : void
+    + dispatchForDelivery(agent) : void
+    + markDelivered() : void
+    + cancel(reason) : void
+    + registerObserver(obs) : void
+    + notifyObservers() : void
+}
+
+enum OrderStatus {
+    PLACED
+    CONFIRMED
+    PREPARING
+    OUT_FOR_DELIVERY
+    DELIVERED
+    CANCELLED
+}
+
+class DeliveryAgent {
+    - agentId : String
+    - name : String
+    - phone : String
+    - currentLocation : Address
+    - isAvailable : boolean
+}
+
+note top of Order #FFCDD2
+    **STEP 5 - User places order.**
+    "Cart items become an Order. Order is the
+    **central domain object**. Has customer,
+    restaurant, items, total, delivery address.
+    Uses **State** (lifecycle) and
+    **Observer** (notifications)."
+end note
+
+Cart *-- CartItem : contains >
+CartItem --> MenuItem : for item >
+Order --> Customer : ordered by >
+Order --> Restaurant : from >
+Order --> CartItem : contains >
+Order --> OrderStatus
+Order --> Address : deliver to >
+Order --> DeliveryAgent : assigned to >
+Customer --> Cart : owns >
+
+class OrderBuilder <<Builder>> {
+    - customer : Customer
+    - restaurant : Restaurant
+    - items : List<CartItem>
+    - deliveryAddress : Address
+    --
+    + fromCart(cart) : OrderBuilder
+    + customer(cust) : OrderBuilder
+    + deliverTo(addr) : OrderBuilder
+    + build() : Order
+}
+
+note bottom of OrderBuilder #D1C4E9
+    **Builder for order creation.**
+    "new OrderBuilder()
+      .fromCart(cart)
+      .customer(alice)
+      .deliverTo(homeAddr)
+      .build()"
+    **Pattern: Builder | SRP**
+end note
+
+OrderBuilder --> Order : builds >
+
+
+' ====================================================================
+'  STEP 6: STATE PATTERN — Order Lifecycle
+' ====================================================================
+interface OrderState <<State>> {
+    + confirm(order) : void
+    + startPreparing(order) : void
+    + dispatch(order, agent) : void
+    + deliver(order) : void
+    + cancel(order, reason) : void
+}
+
+class PlacedState {
+    + confirm(order) : void
+    + cancel(order, reason) : void
+}
+
+class ConfirmedState {
+    + startPreparing(order) : void
+    + cancel(order, reason) : void
+}
+
+class PreparingState {
+    + dispatch(order, agent) : void
+    + cancel(order, reason) : void
+}
+
+class OutForDeliveryState {
+    + deliver(order) : void
+}
+
+class DeliveredState {
+    ' terminal state
+}
+
+class CancelledState {
+    ' terminal state
+}
+
+note bottom of OrderState #FFCDD2
+    **STEP 6 - Order moves through states.**
+    "**State Pattern** — each state is a class.
+    **PlacedState**: restaurant can confirm/cancel.
+    **ConfirmedState**: kitchen starts preparing.
+    **PreparingState**: done cooking, dispatch rider.
+    **OutForDelivery**: rider delivers.
+    **Delivered/Cancelled**: terminal."
+
+    Placed -> Confirmed -> Preparing
+    -> OutForDelivery -> Delivered
+    Placed/Confirmed/Preparing -> Cancelled
+    **Pattern: State | SRP, OCP**
+end note
+
+OrderState <|.. PlacedState
+OrderState <|.. ConfirmedState
+OrderState <|.. PreparingState
+OrderState <|.. OutForDeliveryState
+OrderState <|.. DeliveredState
+OrderState <|.. CancelledState
+Order --> OrderState : delegates lifecycle >
+
+
+' ====================================================================
+'  STEP 7: OBSERVER + NOTIFICATION
+' ====================================================================
+interface OrderObserver <<Observer>> {
+    + onOrderUpdate(order, event) : void
+}
+
+class CustomerNotificationObserver {
+    - notificationService : NotificationService
+    --
+    + onOrderUpdate(order, event) : void
+}
+
+class RestaurantNotificationObserver {
+    --
+    + onOrderUpdate(order, event) : void
+}
+
+class DeliveryAgentObserver {
+    --
+    + onOrderUpdate(order, event) : void
+}
+
+OrderObserver <|.. CustomerNotificationObserver
+OrderObserver <|.. RestaurantNotificationObserver
+OrderObserver <|.. DeliveryAgentObserver
+Order --> OrderObserver : notifies >
+
+class NotificationService {
+    - strategies : List<NotificationStrategy>
+    --
+    + notify(user, message) : void
+}
+
+interface NotificationStrategy <<Strategy>> {
+    + send(recipient, message) : void
+}
+
+class EmailNotification {
+    + send(recipient, message) : void
+}
+
+class SMSNotification {
+    + send(recipient, message) : void
+}
+
+class PushNotification {
+    + send(recipient, message) : void
+}
+
+note bottom of OrderObserver #B2EBF2
+    **STEP 7 - Everyone gets notified.**
+    "On every state change, Order calls
+    notifyObservers(). **Observer Pattern**:"
+    "**CustomerObserver**: 'Your order is being prepared!'
+    **RestaurantObserver**: 'New order received!'
+    **DeliveryAgentObserver**: 'Pickup ready!'"
+
+    "Notification channel via **Strategy**:
+    Push, SMS, Email."
+    **Patterns: Observer + Strategy | OCP, SRP**
+end note
+
+NotificationStrategy <|.. EmailNotification
+NotificationStrategy <|.. SMSNotification
+NotificationStrategy <|.. PushNotification
+NotificationService --> NotificationStrategy : delegates >
+CustomerNotificationObserver --> NotificationService : uses >
+FoodOrderingService --> NotificationService
+
+
+' ====================================================================
+'  STEP 8: PAYMENT — Strategy Pattern
+' ====================================================================
+class PaymentService {
+    --
+    + processPayment(strategy, amount) : PaymentResult
+}
+
+interface PaymentStrategy <<Strategy>> {
+    + pay(amount) : PaymentResult
+}
+
+class CreditCardPayment {
+    - cardNumber : String
+    --
+    + pay(amount) : PaymentResult
+}
+
+class UpiPayment {
+    - upiId : String
+    --
+    + pay(amount) : PaymentResult
+}
+
+class WalletPayment {
+    - walletId : String
+    --
+    + pay(amount) : PaymentResult
+}
+
+class CashOnDeliveryPayment {
+    --
+    + pay(amount) : PaymentResult
+}
+
+class PaymentResult {
+    - success : boolean
+    - transactionId : String
+    - message : String
+}
+
+note bottom of PaymentStrategy #D1C4E9
+    **STEP 8 - Customer pays.**
+    "**Strategy Pattern** — payment method
+    is pluggable. CreditCard, UPI, Wallet,
+    CashOnDelivery. Add PayPal? One class."
+    **Pattern: Strategy | OCP, DIP, LSP**
+end note
+
+PaymentStrategy <|.. CreditCardPayment
+PaymentStrategy <|.. UpiPayment
+PaymentStrategy <|.. WalletPayment
+PaymentStrategy <|.. CashOnDeliveryPayment
+PaymentService --> PaymentStrategy : delegates >
+PaymentService --> PaymentResult : returns >
+FoodOrderingService --> PaymentService
+
+
+' ====================================================================
+'  STEP 9: RATING
+' ====================================================================
+class RatingService {
+    - ratings : Map<String, List<Rating>>
+    --
+    + addRating(orderId, customerId, restaurantId, score, review) : Rating
+    + getAverageRating(restaurantId) : double
+    + getRatings(restaurantId) : List<Rating>
+    + getTopRated(limit) : List<Restaurant>
+}
+
+class Rating {
+    - ratingId : String
+    - customerId : String
+    - restaurantId : String
+    - orderId : String
+    - score : int
+    - review : String
+    - createdAt : LocalDateTime
+    --
+    + getScore() : int
+    + getReview() : String
+}
+
+note bottom of RatingService #B2EBF2
+    **STEP 9 - User rates the restaurant.**
+    "After delivery, user rates 1-5 stars
+    and leaves a review. RatingService
+    computes running average and updates
+    Restaurant.averageRating."
+
+    "Ratings feed back into SortByRating
+    strategy — the system improves itself."
+end note
+
+RatingService --> Rating : manages >
+Rating --> Customer
+Rating --> Restaurant
+FoodOrderingService --> RatingService
+
+
+' ====================================================================
+'  WRAP UP
+' ====================================================================
+note as WRAPUP #FFFDE7
+    **WRAP UP:** "Full journey: search restaurants (**Search Strategy**) ->
+    sort results (**Sort Strategy**) -> add to cart -> place order (**Builder**)
+    -> pay (**Payment Strategy**) -> order transitions Placed->Confirmed
+    ->Preparing->OutForDelivery->Delivered (**State Pattern**) -> customer,
+    restaurant, rider notified at each step (**Observer + Notification Strategy**)
+    -> user rates restaurant (**Rating**).
+    6 patterns: **Facade**, **Strategy** (x4), **Composite**, **State**, **Observer**, **Builder**."
+end note
+
+
+' ====================================================================
+'  LEGEND
+' ====================================================================
+legend bottom
+    |= Step |= What Happens |= Pattern |= SOLID |
+    | 1 | User opens app, calls FoodOrderingService | Facade | SRP, DIP |
+    | 2 | Customer, Restaurant, MenuItem, Address models | -- | SRP |
+    | 3 | Search: by name, cuisine, location, or chained | Strategy + Composite | OCP, DIP |
+    | 4 | Sort: by rating, price, distance, delivery time | Strategy + Composite | OCP |
+    | 5 | Add to cart, place order via Builder | Builder | SRP |
+    | 6 | Placed -> Confirmed -> Preparing -> Delivering -> Delivered | State | SRP, OCP |
+    | 7 | Customer, restaurant, delivery agent all notified | Observer + Strategy | OCP, SRP |
+    | 8 | Pay via CreditCard / UPI / Wallet / COD | Strategy | OCP, DIP, LSP |
+    | 9 | Rate restaurant 1-5 stars, feeds back into sort | -- | SRP |
+    |  |  |  |  |
+    | **Search + Sort** = Steps 3-4 | **Order + Pay** = Steps 5-6,8 | **Notify + Rate** = Steps 7,9 |  |
+endlegend
+
+@enduml
